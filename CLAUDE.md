@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Repository Overview
 
-This is a simple tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses an OpenAI-compatible LLM (Groq, OpenAI, Ollama, or self-hosted GPU) to plan which API endpoints to call, executes HTTP requests, and renders natural language answers.
+This is a simple tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses an OpenAI-compatible LLM (Groq or self-hosted GPU) to plan which API endpoints to call, executes HTTP requests, and renders natural language answers.
 
 ## CRITICAL: Git Rules
 
@@ -83,8 +83,6 @@ The agent calls these services (must be running for the agent to work):
 The agent needs an LLM for planning and rendering. Any OpenAI-compatible endpoint works:
 
 - **Groq** (recommended for local dev): `https://api.groq.com/openai/v1` with `llama-3.3-70b-versatile`
-- **OpenAI**: `https://api.openai.com/v1` with `gpt-4o` or `gpt-4o-mini`
-- **Ollama**: `http://localhost:11434/v1/` with any model
 - **Self-hosted GPU** (company VPN/GCP only): `http://103.42.51.88:2205/` with `orchestrator`
 
 > **Important distinction:** The agent's LLM (plan/render) is separate from the backend services' LLM dependencies. Some SRC and Model Portfolio endpoints call the self-hosted GPU for NER parsing — those won't work without VPN access regardless of which LLM the agent uses. Financial Engine and ML Recommendations have no LLM dependencies.

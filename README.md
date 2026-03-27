@@ -50,7 +50,7 @@ sec-agent/
 ### Prerequisites
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) package manager
-- An OpenAI-compatible LLM endpoint (Groq, OpenAI, Ollama, or the company self-hosted GPU)
+- An OpenAI-compatible LLM endpoint (Groq or the company self-hosted GPU)
 - securities-recommendation services running (locally or deployed)
 - **GCP service account key** (required if running backend services locally — they call external APIs that need S2S auth)
 
@@ -124,27 +124,13 @@ All config is via environment variables (`.env` file or system env). See `.env.e
 
 ### LLM Provider Options
 
-The agent uses any OpenAI-compatible API for planning and rendering. The self-hosted GPU is **only reachable from GCP infrastructure or company VPN**. For local development, use one of these alternatives:
+The agent uses any OpenAI-compatible API for planning and rendering. The self-hosted GPU is **only reachable from GCP infrastructure or company VPN**. For local development, use Groq:
 
 **Groq (recommended for local dev — fast and free tier available):**
 ```env
 LLM_BASE_URL=https://api.groq.com/openai/v1
 LLM_API_KEY=gsk_your-groq-key
 LLM_MODEL=llama-3.3-70b-versatile
-```
-
-**OpenAI:**
-```env
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=sk-your-key
-LLM_MODEL=gpt-4o
-```
-
-**Ollama (fully local, no API key needed):**
-```env
-LLM_BASE_URL=http://localhost:11434/v1/
-LLM_API_KEY=ollama
-LLM_MODEL=llama3
 ```
 
 **Self-hosted GPU (company VPN/GCP only):**
@@ -197,7 +183,57 @@ The **agent itself** always needs an LLM (for planning and rendering), but the *
 | **Financial Engine** | — | `financial_engine` (all functions) |
 | **ML Recommendations** | — | `ml_fund_discovery` |
 
-> **Note:** "Self-hosted LLM" refers to the company GPU endpoint (`orchestrator` / `ner-v2` models). The agent's own LLM (for plan/render) can be any provider (Groq, OpenAI, etc.).
+> **Note:** "Self-hosted LLM" refers to the company GPU endpoint (`orchestrator` / `ner-v2` models). The agent's own LLM (for plan/render) can be any provider (Groq, etc.).
+
+### Financial Engine Functions
+
+The `financial_engine` tool supports the following functions. All use `user_id: 1912650190` as a known test user with portfolio data.
+
+```json
+// Diversification analysis
+{"function": "diversification", "parameters": {"user_id": 1912650190}}
+
+// Asset class breakdown (equity, debt, etc.)
+{"function": "asset_breakdown", "parameters": {"user_id": 1912650190}}
+
+// Sector breakdown
+{"function": "sector_breakdown", "parameters": {"user_id": 1912650190}}
+
+// Market cap breakdown (large/mid/small cap)
+{"function": "market_cap_breakdown", "parameters": {"user_id": 1912650190}}
+
+// Single holding exposure (how much of a specific stock you hold across funds)
+{"function": "single_holding_exposure", "parameters": {"holding_name": "HDFC Bank", "user_id": 1912650190}}
+
+// Top stock exposures
+{"function": "total_stock_exposure", "parameters": {"user_id": 1912650190, "top_n": 5}}
+
+// AMC (fund house) preference analysis
+{"function": "amc_preference", "parameters": {"user_id": 1912650190}}
+
+// Sector preference (active share vs benchmark)
+{"function": "sector_preference", "parameters": {"user_id": 1912650190}}
+
+// Theme preference analysis
+{"function": "theme_preference", "parameters": {"user_id": 1912650190}}
+
+// Factor preference analysis
+{"function": "factor_preference", "parameters": {"user_id": 1912650190}}
+```
+
+These can be called directly via the backend API:
+```bash
+curl -X POST http://localhost:8089/financial_engine \
+  -H "Content-Type: application/json" \
+  -d '{"function": "sector_breakdown", "parameters": {"user_id": "1912650190"}}'
+```
+
+Or through the agent with natural language:
+```bash
+curl -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the exposure to HDFC Bank for user 1912650190?"}'
+```
 
 ## API
 
