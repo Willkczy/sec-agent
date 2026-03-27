@@ -1,6 +1,18 @@
 # sec-agent
 
-A lightweight tool-calling agent that orchestrates the [securities-recommendation](../securities-recommendation) microservice APIs via natural language queries. Inspired by [Zara](../zara)'s orchestration pattern but simplified to a thin HTTP-based API orchestrator.
+A lightweight tool-calling agent that orchestrates the [securities-recommendation](../securities-recommendation) microservice APIs via natural language queries.
+
+## Project Goal
+
+The ultimate goal of this project is to build an agent that can **explain the logic and assumptions behind its answers**, not just relay API results. Currently the agent can call backend APIs and render results as natural language, but when users ask follow-up questions like "how was this calculated?" or "what assumptions does the diversification score use?", the agent has no understanding of the computation behind the APIs.
+
+The key challenge is: **how do we give the agent understanding of the backend computation so it can answer "why" and "how" questions?**
+
+Possible approaches being explored:
+- **Calculation context from APIs** — Have backend endpoints return metadata explaining the computation alongside results
+- **Code documentation injection** — Extract logic summaries from backend source code and inject into prompts
+- **RAG over source code** — Index the backend codebase and retrieve relevant snippets for "how" questions
+- **Static knowledge base per tool** — Write markdown explanations for each function, loaded into prompts
 
 ## Architecture
 
@@ -187,53 +199,9 @@ The **agent itself** always needs an LLM (for planning and rendering), but the *
 
 ### Financial Engine Functions
 
-The `financial_engine` tool supports the following functions. All use `user_id: 1912650190` as a known test user with portfolio data.
+The `financial_engine` tool supports 10 functions: `diversification`, `asset_breakdown`, `sector_breakdown`, `market_cap_breakdown`, `single_holding_exposure`, `total_stock_exposure`, `amc_preference`, `sector_preference`, `theme_preference`, `factor_preference`.
 
-```json
-// Diversification analysis
-{"function": "diversification", "parameters": {"user_id": 1912650190}}
-
-// Asset class breakdown (equity, debt, etc.)
-{"function": "asset_breakdown", "parameters": {"user_id": 1912650190}}
-
-// Sector breakdown
-{"function": "sector_breakdown", "parameters": {"user_id": 1912650190}}
-
-// Market cap breakdown (large/mid/small cap)
-{"function": "market_cap_breakdown", "parameters": {"user_id": 1912650190}}
-
-// Single holding exposure (how much of a specific stock you hold across funds)
-{"function": "single_holding_exposure", "parameters": {"holding_name": "HDFC Bank", "user_id": 1912650190}}
-
-// Top stock exposures
-{"function": "total_stock_exposure", "parameters": {"user_id": 1912650190, "top_n": 5}}
-
-// AMC (fund house) preference analysis
-{"function": "amc_preference", "parameters": {"user_id": 1912650190}}
-
-// Sector preference (active share vs benchmark)
-{"function": "sector_preference", "parameters": {"user_id": 1912650190}}
-
-// Theme preference analysis
-{"function": "theme_preference", "parameters": {"user_id": 1912650190}}
-
-// Factor preference analysis
-{"function": "factor_preference", "parameters": {"user_id": 1912650190}}
-```
-
-These can be called directly via the backend API:
-```bash
-curl -X POST http://localhost:8089/financial_engine \
-  -H "Content-Type: application/json" \
-  -d '{"function": "sector_breakdown", "parameters": {"user_id": "1912650190"}}'
-```
-
-Or through the agent with natural language:
-```bash
-curl -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is the exposure to HDFC Bank for user 1912650190?"}'
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md#financial-engine-test-payloads) for full example payloads.
 
 ## API
 
@@ -266,4 +234,3 @@ Returns `{"status": "ok", "service": "sec-agent"}`.
 ## Relationship to Other Repos
 
 - **[securities-recommendation](../securities-recommendation)** — The 5 microservices this agent calls. This agent is a pure HTTP consumer; it does NOT import any code from securities-recommendation.
-- **[Zara](../zara)** — The more complex agent this is modeled after. Zara imports analyzer classes and runs pandas code in-process. This agent is simpler: HTTP calls only, no data processing.

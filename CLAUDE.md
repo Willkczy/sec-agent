@@ -4,7 +4,11 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Repository Overview
 
-This is a simple tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses an OpenAI-compatible LLM (Groq or self-hosted GPU) to plan which API endpoints to call, executes HTTP requests, and renders natural language answers.
+This is a tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses an OpenAI-compatible LLM (Groq or self-hosted GPU) to plan which API endpoints to call, executes HTTP requests, and renders natural language answers.
+
+## Project Goal
+
+The agent's ultimate goal is to **explain the logic and assumptions behind API results**, not just relay numbers. Currently it can call APIs and render results, but cannot answer follow-up questions like "how was this calculated?" or "what assumptions does this use?". All work should be evaluated against this goal. See README.md for approaches being explored.
 
 ## CRITICAL: Git Rules
 
@@ -59,13 +63,12 @@ models.py  → AskRequest / AskResponse Pydantic models
 ### Configuration
 - All settings via `.env` file, loaded by pydantic-settings
 - `ENABLE_AUTH=false` for local development, `true` for deployed services
-- LLM provider is configurable: Groq, OpenAI, Ollama, or self-hosted GPU (see README for setup)
+- LLM provider is configurable: Groq or self-hosted GPU (see README for setup)
 - Backend services need GCP credentials (`GOOGLE_APPLICATION_CREDENTIALS`) to call external APIs
 
 ## Dependencies on Other Repos
 
 - **securities-recommendation** (sibling directory): The 5 microservices this agent calls over HTTP. This agent does NOT import any code from it.
-- **zara** (sibling directory): The complex agent this is modeled after. Referenced for patterns only.
 
 ## Upstream API Services
 
@@ -101,6 +104,5 @@ Without this, running backend services locally will produce 500 errors.
 
 - Do not add organization-specific routing (this agent is org-agnostic by design)
 - Do not import code from securities-recommendation — communicate only via HTTP
-- Do not add pandas/DataFrame processing in the MVP — this is planned as a future extension
 - Do not hardcode API responses or mock data in production code
 - Keep prompts in `prompts.py`, not scattered across other files

@@ -1,5 +1,11 @@
 # Contributing Guide
 
+## Project Goal
+
+This agent's ultimate goal is not just to call APIs and return results — it's to **explain the logic and assumptions behind those results**. When evaluating contributions, ask: "does this move us closer to the agent being able to answer *why* and *how*, not just *what*?"
+
+See [README.md](README.md#project-goal) for the full problem statement and approaches being explored.
+
 ## Development Setup
 
 ```bash
@@ -136,13 +142,9 @@ Example:
 - Render prompt is in `prompts.py:RENDER_PROMPT` — keep the anti-hallucination rules strict
 - After changing prompts, test with diverse queries to catch regressions (the LLM may behave differently)
 
-### Adding a New LLM Provider
+### Switching LLM Provider
 
-The agent uses `openai.AsyncOpenAI` which supports any OpenAI-compatible API. To switch providers:
-
-1. Update `.env` with the new base URL, API key, and model name
-2. No code changes needed if the provider is OpenAI-compatible
-3. If the provider has a different SDK, modify the LLM client initialization in `main.py`
+The agent uses `openai.AsyncOpenAI` which supports any OpenAI-compatible API. To switch providers, just update `.env` with the new base URL, API key, and model name — no code changes needed.
 
 ## Testing
 
@@ -206,11 +208,45 @@ curl -s -X POST http://localhost:8090/ask \
   -d '{"query": "your query"}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d['debug'], indent=2))"
 ```
 
+### Financial Engine Test Payloads
+
+The `financial_engine` tool supports the following functions. All use `user_id: 1912650190` as a known test user with portfolio data.
+
+```json
+{"function": "diversification", "parameters": {"user_id": 1912650190}}
+{"function": "asset_breakdown", "parameters": {"user_id": 1912650190}}
+{"function": "sector_breakdown", "parameters": {"user_id": 1912650190}}
+{"function": "market_cap_breakdown", "parameters": {"user_id": 1912650190}}
+{"function": "single_holding_exposure", "parameters": {"holding_name": "HDFC Bank", "user_id": 1912650190}}
+{"function": "total_stock_exposure", "parameters": {"user_id": 1912650190, "top_n": 5}}
+{"function": "amc_preference", "parameters": {"user_id": 1912650190}}
+{"function": "sector_preference", "parameters": {"user_id": 1912650190}}
+{"function": "theme_preference", "parameters": {"user_id": 1912650190}}
+{"function": "factor_preference", "parameters": {"user_id": 1912650190}}
+```
+
+Direct API call:
+```bash
+curl -X POST http://localhost:8089/financial_engine \
+  -H "Content-Type: application/json" \
+  -d '{"function": "sector_breakdown", "parameters": {"user_id": "1912650190"}}'
+```
+
+Through the agent:
+```bash
+curl -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the exposure to HDFC Bank for user 1912650190?"}'
+```
+
 ## Future Work
 
-These are planned extensions — documented here so contributors can pick them up:
+All future work should be evaluated against the [project goal](README.md#project-goal): enabling the agent to explain the logic behind API results.
 
-1. **Calculation context in render** — Inject explanation of how each API computes its results so the agent can answer "how did you calculate this?" follow-ups
-2. **Pandas processing tool** — Add an in-process tool that takes API results into a DataFrame and runs LLM-generated pandas code for custom analysis (same pattern as Zara's `run_query()`)
-3. **Conversation memory** — Support multi-turn conversations where the agent remembers previous queries and results
+### Core goal: Explainability
+1. **Calculation context** — Give the agent access to how each API computes its results (e.g., "sector_breakdown weights each holding's sectorExposure by its currentValue proportion") so it can answer "how was this calculated?"
+2. **Assumption transparency** — Surface the assumptions each function makes (e.g., "holdings with missing sectorExposure are skipped", "benchmark is Nifty 500")
+
+### Supporting features
+3. **Conversation memory** — Support multi-turn conversations so users can ask follow-up questions about previous results
 4. **Streaming responses** — Stream the render LLM output for better UX on long answers
