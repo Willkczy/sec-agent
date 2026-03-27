@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Repository Overview
 
-This is a simple tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses a self-hosted LLM (OpenAI-compatible) to plan which API endpoints to call, executes HTTP requests, and renders natural language answers.
+This is a simple tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses an OpenAI-compatible LLM (Groq, OpenAI, Ollama, or self-hosted GPU) to plan which API endpoints to call, executes HTTP requests, and renders natural language answers.
 
 ## CRITICAL: Git Rules
 
@@ -25,8 +25,8 @@ uv run uvicorn main:app --port 8091
 # Quick syntax check
 uv run python -c "from main import app; print('OK')"
 
-# Test the endpoint
-curl -s -X POST http://localhost:8090/ask -H "Content-Type: application/json" -d '{"query": "Show me top 3 large cap funds"}'
+# Test the endpoint (use user 1912650190 — verified with portfolio data)
+curl -s -X POST http://localhost:8090/ask -H "Content-Type: application/json" -d '{"query": "Show sector breakdown for user 1912650190"}'
 ```
 
 ## Architecture
@@ -59,7 +59,8 @@ models.py  → AskRequest / AskResponse Pydantic models
 ### Configuration
 - All settings via `.env` file, loaded by pydantic-settings
 - `ENABLE_AUTH=false` for local development, `true` for deployed services
-- LLM defaults match Zara's cli.py (self-hosted GPU at 103.42.51.88:2205, dummy API key)
+- LLM provider is configurable: Groq, OpenAI, Ollama, or self-hosted GPU (see README for setup)
+- Backend services need GCP credentials (`GOOGLE_APPLICATION_CREDENTIALS`) to call external APIs
 
 ## Dependencies on Other Repos
 
@@ -79,10 +80,24 @@ The agent calls these services (must be running for the agent to work):
 
 ## LLM Access
 
-- **Self-hosted GPU**: `http://103.42.51.88:2205/` (dev) or `http://103.42.51.60/` (prod)
-- API key: `123-123-123` (dummy — the self-hosted endpoint doesn't validate keys)
-- Model name: `orchestrator`
-- **Note**: GPU endpoints are only reachable from GCP infrastructure or company VPN. For local development without VPN, use OpenAI or Ollama as alternatives.
+The agent needs an LLM for planning and rendering. Any OpenAI-compatible endpoint works:
+
+- **Groq** (recommended for local dev): `https://api.groq.com/openai/v1` with `llama-3.3-70b-versatile`
+- **OpenAI**: `https://api.openai.com/v1` with `gpt-4o` or `gpt-4o-mini`
+- **Ollama**: `http://localhost:11434/v1/` with any model
+- **Self-hosted GPU** (company VPN/GCP only): `http://103.42.51.88:2205/` with `orchestrator`
+
+> **Important distinction:** The agent's LLM (plan/render) is separate from the backend services' LLM dependencies. Some SRC and Model Portfolio endpoints call the self-hosted GPU for NER parsing — those won't work without VPN access regardless of which LLM the agent uses. Financial Engine and ML Recommendations have no LLM dependencies.
+
+## GCP Credentials
+
+Backend services call external APIs (portfolio data, security master) that require S2S authentication:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json'
+```
+
+Without this, running backend services locally will produce 500 errors.
 
 ## Important: What NOT to Do
 

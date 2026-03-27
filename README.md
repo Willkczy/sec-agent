@@ -50,8 +50,9 @@ sec-agent/
 ### Prerequisites
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) package manager
-- Access to the self-hosted GPU endpoint (or an OpenAI API key)
+- An OpenAI-compatible LLM endpoint (Groq, OpenAI, Ollama, or the company self-hosted GPU)
 - securities-recommendation services running (locally or deployed)
+- **GCP service account key** (required if running backend services locally — they call external APIs that need S2S auth)
 
 ### Setup
 
@@ -61,18 +62,51 @@ cd sec-agent
 # Install dependencies
 uv sync
 
-# Copy env template (defaults work for local development)
+# Copy env template and configure your LLM provider
 cp .env.example .env
+# Edit .env — see "LLM Provider Options" below
 
 # Start the agent
-uv run uvicorn main:app --port 8090
+uv run uvicorn main:app --port 8090 --reload
 ```
+
+### Running Backend Services Locally
+
+The agent calls securities-recommendation services over HTTP. You can either point at deployed services or run them locally.
+
+**Running a single service locally** (e.g., financial engine):
+```bash
+cd ../securities-recommendation
+
+# Set GCP credentials for S2S auth to external APIs
+export GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json'
+
+# Start with dev API target
+API_BASE_URL='https://api.askmyfi.dev' \
+uvicorn services.financial_engine.main:app --host 0.0.0.0 --port 8089
+```
+
+> **Important:** Most backend services depend on external APIs (portfolio data, security master, etc.) via `API_BASE_URL`. They need GCP credentials to authenticate these calls. Without credentials, you'll get 500 errors.
 
 ### Test
 
 ```bash
-curl -X POST http://localhost:8090/ask -H "Content-Type: application/json" -d '{"query": "Show me top 3 large cap funds with low expense ratio"}'
+# Portfolio analytics (financial engine)
+curl -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Show me the sector breakdown for user 1912650190"}'
+
+# Fund search (requires SRC service + self-hosted LLM)
+curl -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Show me top 3 large cap funds with low expense ratio"}'
 ```
+
+### Test User IDs
+
+| User ID | Has Portfolio Data | Notes |
+|---------|-------------------|-------|
+| `1912650190` | Yes | Use this for financial engine testing |
 
 ## Configuration
 
@@ -88,12 +122,36 @@ All config is via environment variables (`.env` file or system env). See `.env.e
 | `LLM_MAX_TOKENS` | `8192` | Max tokens for LLM responses |
 | `ENABLE_AUTH` | `false` | Enable S2S auth for deployed environments |
 
-### Using OpenAI instead of self-hosted GPU
+### LLM Provider Options
 
+The agent uses any OpenAI-compatible API for planning and rendering. The self-hosted GPU is **only reachable from GCP infrastructure or company VPN**. For local development, use one of these alternatives:
+
+**Groq (recommended for local dev — fast and free tier available):**
+```env
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_API_KEY=gsk_your-groq-key
+LLM_MODEL=llama-3.3-70b-versatile
+```
+
+**OpenAI:**
 ```env
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=sk-your-key
 LLM_MODEL=gpt-4o
+```
+
+**Ollama (fully local, no API key needed):**
+```env
+LLM_BASE_URL=http://localhost:11434/v1/
+LLM_API_KEY=ollama
+LLM_MODEL=llama3
+```
+
+**Self-hosted GPU (company VPN/GCP only):**
+```env
+LLM_BASE_URL=http://103.42.51.88:2205/
+LLM_API_KEY=123-123-123
+LLM_MODEL=orchestrator
 ```
 
 ### Targeting deployed services
@@ -127,6 +185,19 @@ ENABLE_AUTH=true
 | `determine_income_sector` | Model Portfolio | `/cr/model-portfolio/determine_income_sector` | Income classification |
 | `financial_engine` | Fin Engine | `/cr/fin-engine/financial_engine` | Portfolio analytics |
 | `ml_fund_discovery` | ML Recs | `/cr/mlr/fund_discovery` | CF-based discovery |
+
+### Backend LLM Dependencies
+
+The **agent itself** always needs an LLM (for planning and rendering), but the **backend services** have varying LLM requirements. This matters when deciding which tools you can test without the company's self-hosted GPU:
+
+| Service | Tools that need self-hosted LLM | Tools that do NOT need LLM |
+|---------|--------------------------------|---------------------------|
+| **SRC** | `search_funds`, `parse_query`, `can_support` | `swap_recommendations`, `portfolio_swap_recommendations`, `get_fund_peers`, `stock_research_data` |
+| **Model Portfolio** | `determine_income_sector`, `risk_profile_v2` (conditional) | `get_portfolio_options`, `backtest_portfolio`, `portfolio_builder`, `get_risk_profile`, `single_goal_optimizer`, `multi_goal_optimizer`, `goal_defaults`, `build_stock_portfolio`, `stock_to_fund` |
+| **Financial Engine** | — | `financial_engine` (all functions) |
+| **ML Recommendations** | — | `ml_fund_discovery` |
+
+> **Note:** "Self-hosted LLM" refers to the company GPU endpoint (`orchestrator` / `ner-v2` models). The agent's own LLM (for plan/render) can be any provider (Groq, OpenAI, etc.).
 
 ## API
 

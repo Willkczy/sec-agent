@@ -11,10 +11,45 @@ uv sync
 
 # Copy environment config
 cp .env.example .env
+# Edit .env to configure your LLM provider (see README for options)
 
 # Run the server locally
 uv run uvicorn main:app --port 8090 --reload
 ```
+
+### GCP Credentials
+
+Backend services (securities-recommendation) call external APIs that require GCP S2S authentication. To run them locally:
+
+```bash
+# Option 1: Service account key (recommended)
+export GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json'
+
+# Option 2: gcloud CLI
+gcloud auth application-default login
+```
+
+Without this, backend services will return 500 errors when they try to fetch user portfolios or security data.
+
+### Running Backend Services
+
+The agent calls backend services at `API_BASE_URL` (default: `http://localhost:8089`). You can run individual services:
+
+```bash
+cd ../securities-recommendation
+
+# Financial engine (no LLM dependency)
+GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json' \
+API_BASE_URL='https://api.askmyfi.dev' \
+uvicorn services.financial_engine.main:app --host 0.0.0.0 --port 8089
+
+# ML recommendations (no LLM dependency)
+GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json' \
+API_BASE_URL='https://api.askmyfi.dev' \
+uvicorn services.ml_recommendations.main:app --host 0.0.0.0 --port 8089
+```
+
+> **Tip:** You only need to run the service(s) relevant to the tools you're testing. See README for which tools map to which service.
 
 ## Git Workflow
 
@@ -113,24 +148,38 @@ The agent uses `openai.AsyncOpenAI` which supports any OpenAI-compatible API. To
 
 ### Manual Testing
 
-Start the agent and the securities-recommendation services, then test with curl:
+Start the agent and the relevant backend service(s), then test with curl:
 
 ```bash
-# Basic fund search
+# Portfolio analytics — financial engine (no self-hosted LLM needed)
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Show sector breakdown for user 1912650190"}' | python3 -m json.tool
+
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the exposure to HDFC Bank for user 1912650190?"}' | python3 -m json.tool
+
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Show market cap breakdown for user 1912650190"}' | python3 -m json.tool
+
+# Fund search — SRC service (requires self-hosted LLM for NER)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"query": "Show me top 3 large cap funds"}' | python3 -m json.tool
 
-# Goal planning
+# Goal planning — model portfolio service (no self-hosted LLM needed)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"query": "I want to save 50 lakhs for retirement in 20 years, investing 10000 per month via SIP"}' | python3 -m json.tool
-
-# Portfolio analytics
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Show sector breakdown for user 1449300570"}' | python3 -m json.tool
 ```
+
+### Test User IDs
+
+| User ID | Has Portfolio Data | Notes |
+|---------|-------------------|-------|
+| `1912650190` | Yes | Verified working for all financial engine functions |
 
 ### What to Test After Changes
 
