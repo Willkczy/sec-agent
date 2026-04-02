@@ -714,3 +714,44 @@ def get_tools_prompt() -> str:
             lines.append("\n".join(parts))
         lines.append("")
     return "\n".join(lines)
+
+
+def get_openai_tools() -> list[dict]:
+    """Convert the TOOLS registry into OpenAI function-calling format.
+
+    Returns a list of tool dicts ready to pass as the ``tools`` parameter
+    to ``client.chat.completions.create()``.
+    """
+    openai_tools = []
+    for tool_name, tool_def in TOOLS.items():
+        properties = {}
+        required = []
+        for param_name, param_schema in tool_def["parameters"].items():
+            prop: dict = {
+                "type": param_schema["type"],
+                "description": param_schema.get("description", ""),
+            }
+            if "enum" in param_schema:
+                prop["enum"] = param_schema["enum"]
+            if "default" in param_schema:
+                prop["default"] = param_schema["default"]
+            # OpenAI uses "object" for nested dicts and "array" for lists;
+            # keep the type as-is since the backend expects these shapes.
+            properties[param_name] = prop
+
+            if param_schema.get("required"):
+                required.append(param_name)
+
+        openai_tools.append({
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": tool_def["description"],
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            },
+        })
+    return openai_tools
