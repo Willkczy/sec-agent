@@ -20,41 +20,43 @@ Possible approaches being explored:
 User Query
     │
     ▼
-┌─────────┐   JSON plan    ┌──────────┐   HTTP POST    ┌─────────────────────────┐
-│ Planner │ ─────────────► │ Executor │ ─────────────► │ securities-recommendation│
-│  (LLM)  │                │          │                │  microservices (5 svc)   │
-└─────────┘                └──────────┘                └─────────────────────────┘
-                                │                                │
-                                │ results                        │
-                                ▼                                │
-                           ┌──────────┐                          │
-                           │ Renderer │ ◄────────────────────────┘
-                           │  (LLM)   │
-                           └──────────┘
-                                │
-                                ▼
-                          Final Answer
+┌───────────────────────────────────────────────────┐
+│              Agent (conversation loop)             │
+│                                                   │
+│  1. Send query + tool schemas to LLM              │
+│  2. LLM returns tool_calls (native function call) │
+│  3. Execute HTTP calls to backend services        │
+│  4. Feed results back to LLM                      │
+│  5. Repeat until LLM responds with text           │
+└───────────────────────────────────────────────────┘
+        │                           │
+        │ HTTP POST                 │ Final Answer
+        ▼                           ▼
+┌─────────────────────────┐
+│ securities-recommendation│
+│  microservices (5 svc)   │
+└─────────────────────────┘
 ```
 
-**Three-phase loop (plan → execute → render):**
-1. **Plan** — LLM decides which API endpoints to call, outputs a JSON plan
-2. **Execute** — Agent makes async HTTP calls to the securities-recommendation services
-3. **Render** — LLM synthesizes API responses into a natural language answer
-
-Multi-step queries are supported via `next_step_required` flag (max 3 iterations).
+**Native function calling loop:**
+- The LLM receives all 20 tool schemas via the OpenAI `tools` API parameter
+- It decides which tool(s) to call using native function calling (no JSON parsing needed)
+- The agent executes the HTTP calls and feeds results back as `tool` messages
+- The loop repeats until the LLM responds with text (or max 3 iterations)
 
 ## Project Structure
 
 ```
 sec-agent/
-├── main.py            # FastAPI app + Agent orchestrator class
-├── tools.py           # Tool registry (20 tools across 5 services)
-├── prompts.py         # Planner + render system prompts
-├── models.py          # Pydantic request/response models
-├── api_client.py      # Async HTTP client for microservice calls
-├── config.py          # Settings (env-based configuration)
-├── pyproject.toml     # uv project dependencies
-└── .env.example       # Environment variable template
+├── main.py                # FastAPI app + Agent orchestrator (conversation loop)
+├── tools.py               # Tool registry (20 tools) + get_openai_tools()
+├── prompts.py             # System prompt (unified tool-use + rendering rules)
+├── models.py              # Pydantic request/response models
+├── api_client.py          # Async HTTP client for microservice calls
+├── config.py              # Settings (env-based configuration)
+├── test_tool_selection.py # Dry-run tool selection tests (15 cases)
+├── pyproject.toml         # uv project dependencies
+└── .env.example           # Environment variable template
 ```
 
 ## Quick Start
@@ -62,7 +64,7 @@ sec-agent/
 ### Prerequisites
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) package manager
-- An OpenAI-compatible LLM endpoint (Groq or the company self-hosted GPU)
+- An OpenAI-compatible LLM endpoint (self-hosted GPU recommended; Groq context window is too small for 20 tool schemas)
 - securities-recommendation services running (locally or deployed)
 - **GCP service account key** (required if running backend services locally — they call external APIs that need S2S auth)
 
@@ -128,29 +130,27 @@ All config is via environment variables (`.env` file or system env). See `.env.e
 |----------|---------|-------------|
 | `API_BASE_URL` | `http://localhost:8089` | securities-recommendation base URL |
 | `LLM_BASE_URL` | `http://103.42.51.88:2205/` | Self-hosted GPU endpoint |
-| `LLM_API_KEY` | `123-123-123` | GPU API key (dummy key for self-hosted) |
+| `LLM_API_KEY` | `anything works` | GPU API key (dummy key for self-hosted) |
 | `LLM_MODEL` | `orchestrator` | Model name on the GPU endpoint |
-| `LLM_TEMPERATURE` | `0.2` | LLM temperature for planning |
-| `LLM_MAX_TOKENS` | `8192` | Max tokens for LLM responses |
+| `LLM_TEMPERATURE` | `0.2` | LLM temperature |
+| `LLM_MAX_TOKENS` | `16384` | Max tokens for LLM responses |
 | `ENABLE_AUTH` | `false` | Enable S2S auth for deployed environments |
 
 ### LLM Provider Options
 
-The agent uses any OpenAI-compatible API for planning and rendering. The self-hosted GPU is **only reachable from GCP infrastructure or company VPN**. For local development, use Groq:
+The agent uses any OpenAI-compatible API with native function calling support. The 20 tool schemas consume ~3,800 tokens per request, so the LLM needs a sufficiently large context window.
 
-**Groq (recommended for local dev — fast and free tier available):**
-```env
-LLM_BASE_URL=https://api.groq.com/openai/v1
-LLM_API_KEY=gsk_your-groq-key
-LLM_MODEL=llama-3.3-70b-versatile
-```
-
-**Self-hosted GPU (company VPN/GCP only):**
+**Self-hosted GPU (recommended — GLM-4.7-Flash via vLLM):**
 ```env
 LLM_BASE_URL=http://103.42.51.88:2205/
-LLM_API_KEY=123-123-123
+LLM_API_KEY=anything works
 LLM_MODEL=orchestrator
 ```
+
+> **Note:** The self-hosted GPU is only reachable from GCP infrastructure or company VPN.
+
+**Groq (NOT recommended — context window too small for 20 tool schemas):**
+Groq's free tier has a ~12K TPM limit which is exceeded by the tool schemas alone. If you need Groq, you'd need to reduce the number of tools or implement category-based routing.
 
 ### Targeting deployed services
 
@@ -211,8 +211,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md#financial-engine-test-payloads) for full e
 ```json
 {
   "query": "Compare SBI Large Cap Fund with its peers",
-  "max_iters": 3,
-  "org_id": null
+  "max_iters": 3
 }
 ```
 
@@ -221,7 +220,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md#financial-engine-test-payloads) for full e
 {
   "answer": "Here are the peer funds for SBI Large Cap Fund...",
   "debug": {
-    "plans": [{"reasoning": "...", "tool_calls": [...], "next_step_required": false}],
+    "iterations": [{"iteration": 1, "tool_calls": [{"tool": "get_fund_peers", "params": {...}}]}],
     "tool_results": [{"tool": "get_fund_peers", "params": {...}, "result": {...}}]
   }
 }
