@@ -27,6 +27,7 @@ load_dotenv()
 llm_client = AsyncOpenAI(
     base_url=settings.LLM_BASE_URL,
     api_key=settings.LLM_API_KEY,
+    timeout=120.0,
 )
 
 api_client = APIClient(
@@ -89,6 +90,9 @@ class Agent:
                 tools=OPENAI_TOOLS,
                 temperature=settings.LLM_TEMPERATURE,
                 max_tokens=settings.LLM_MAX_TOKENS,
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False}
+                },
             )
             choice = resp.choices[0]
             assistant_msg = choice.message
@@ -167,6 +171,9 @@ class Agent:
             messages=messages,
             temperature=0.3,
             max_tokens=4096,
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": False}
+            },
         )
         return {
             "answer": resp.choices[0].message.content or "Max iterations reached with no answer.",
