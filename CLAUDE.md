@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Repository Overview
 
-This is a tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses an OpenAI-compatible LLM (Groq or self-hosted GPU) to plan which API endpoints to call, executes HTTP requests, and renders natural language answers.
+This is a tool-calling agent that orchestrates the securities-recommendation microservice APIs. It uses native OpenAI function calling via a self-hosted GLM-4.7-Flash model (vLLM) to decide which API endpoints to call, executes HTTP requests, and synthesizes natural language answers in a single conversation loop.
 
 ## Project Goal
 
@@ -29,6 +29,9 @@ uv run uvicorn main:app --port 8091
 # Quick syntax check
 uv run python -c "from main import app; print('OK')"
 
+# Run tool selection tests (dry-run, no backend needed)
+uv run python test_tool_selection.py
+
 # Test the endpoint (use user 1912650190 — verified with portfolio data)
 curl -s -X POST http://localhost:8090/ask -H "Content-Type: application/json" -d '{"query": "Show sector breakdown for user 1912650190"}'
 ```
@@ -36,34 +39,36 @@ curl -s -X POST http://localhost:8090/ask -H "Content-Type: application/json" -d
 ## Architecture
 
 ```
-main.py    → Agent class (plan/execute/render loop) + FastAPI /ask endpoint
-tools.py   → TOOLS dict (20 tools) + get_tools_prompt() helper
-prompts.py → Planner prompt (with dynamic tool list) + render prompt
-api_client.py → APIClient class (aiohttp POST to microservices)
-config.py  → Settings from .env (API URL, LLM endpoint, auth toggle)
-models.py  → AskRequest / AskResponse Pydantic models
+main.py                → Agent class (conversation loop with native function calling) + FastAPI /ask endpoint
+tools.py               → TOOLS dict (20 tools) + get_openai_tools() for OpenAI schema conversion
+prompts.py             → Unified SYSTEM_PROMPT (tool-use guidelines + rendering rules)
+api_client.py          → APIClient class (aiohttp POST to microservices)
+config.py              → Settings from .env (API URL, LLM endpoint, auth toggle)
+models.py              → AskRequest / AskResponse Pydantic models
+test_tool_selection.py → Dry-run tool selection tests (15 cases, no backend needed)
 ```
 
-**Data flow:** User query → planner LLM → JSON plan → HTTP calls to securities-recommendation → render LLM → answer
+**Data flow:** User query + tool schemas → LLM returns tool_calls → HTTP calls to backend → results fed back → LLM responds with text
 
 ## Key Patterns
 
 ### Tool Registry (tools.py)
 - Tools are defined as dicts in `TOOLS` with description, endpoint, method, parameters
-- `get_tools_prompt()` auto-renders all tools into the planner system prompt
+- `get_openai_tools()` converts the registry into OpenAI function-calling schema (passed via `tools` API parameter)
 - Adding a tool = adding a dict entry. No other code changes needed.
 
 ### Agent Orchestration (main.py)
-- `Agent.plan()` → sends query + system prompt to LLM, parses JSON response
-- `Agent.execute()` → loops through `tool_calls`, calls `api_client.call_tool()` for each
-- `Agent.render()` → sends query + all tool results to render LLM
-- `Agent.run()` → full loop with optional multi-step (`next_step_required`)
-- `extract_json_object()` → robust JSON extraction from LLM text (regex for ```json fences then fallback)
+- `Agent.run()` → single conversation loop using native function calling
+- LLM receives tool schemas via `tools` parameter, returns `tool_calls` when it wants to call a tool
+- `Agent._call_tool()` → looks up the tool in the registry and makes the HTTP call
+- Loop continues until LLM responds with text (no tool_calls) or max iterations (3) reached
+- If max iterations exhausted, a final LLM call without tools forces a text response
 
 ### Configuration
 - All settings via `.env` file, loaded by pydantic-settings
 - `ENABLE_AUTH=false` for local development, `true` for deployed services
-- LLM provider is configurable: Groq or self-hosted GPU (see README for setup)
+- Self-hosted GPU is recommended (Groq context window too small for 20 tool schemas)
+- `extra_body: {"chat_template_kwargs": {"enable_thinking": False}}` required for GLM chat template
 - Backend services need GCP credentials (`GOOGLE_APPLICATION_CREDENTIALS`) to call external APIs
 
 ## Dependencies on Other Repos
@@ -83,12 +88,12 @@ The agent calls these services (must be running for the agent to work):
 
 ## LLM Access
 
-The agent needs an LLM for planning and rendering. Any OpenAI-compatible endpoint works:
+The agent needs an LLM with native function calling support and a large enough context window for 20 tool schemas (~3,800 tokens).
 
-- **Groq** (recommended for local dev): `https://api.groq.com/openai/v1` with `llama-3.3-70b-versatile`
-- **Self-hosted GPU** (company VPN/GCP only): `http://103.42.51.88:2205/` with `orchestrator`
+- **Self-hosted GPU** (recommended): `http://103.42.51.88:2205/` with `orchestrator` (GLM-4.7-Flash via vLLM, company VPN/GCP only)
+- **Groq** (NOT recommended): context window too small for 20 tool schemas
 
-> **Important distinction:** The agent's LLM (plan/render) is separate from the backend services' LLM dependencies. Some SRC and Model Portfolio endpoints call the self-hosted GPU for NER parsing — those won't work without VPN access regardless of which LLM the agent uses. Financial Engine and ML Recommendations have no LLM dependencies.
+> **Important distinction:** The agent's LLM is separate from the backend services' LLM dependencies. Some SRC and Model Portfolio endpoints call the self-hosted GPU for NER parsing — those won't work without VPN access regardless of which LLM the agent uses. Financial Engine and ML Recommendations have no LLM dependencies.
 
 ## GCP Credentials
 

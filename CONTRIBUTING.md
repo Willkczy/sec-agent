@@ -117,13 +117,13 @@ Each file has a single responsibility. Don't blur the lines:
 ### Adding a New Tool
 
 1. **Define it in `tools.py`** — add an entry to the `TOOLS` dict with description, endpoint, method, and parameter schema
-2. **That's it** — the planner prompt auto-generates from `TOOLS` via `get_tools_prompt()`, and `execute()` dispatches by looking up the endpoint
+2. **That's it** — `get_openai_tools()` auto-converts the registry into OpenAI function-calling schema, and the agent dispatches by looking up the endpoint
 
 Example:
 ```python
 # In tools.py, add to the TOOLS dict:
 "new_tool_name": {
-    "description": "What this tool does (shown to the LLM planner)",
+    "description": "What this tool does (shown to the LLM via function calling)",
     "endpoint": "/cr/service-name/endpoint-path",
     "method": "POST",
     "parameters": {
@@ -138,9 +138,8 @@ Example:
 
 ### Modifying Prompts
 
-- Planner prompt is in `prompts.py:get_planner_prompt()` — edit the rules/instructions there
-- Render prompt is in `prompts.py:RENDER_PROMPT` — keep the anti-hallucination rules strict
-- After changing prompts, test with diverse queries to catch regressions (the LLM may behave differently)
+- System prompt is in `prompts.py:SYSTEM_PROMPT` — contains both tool-use guidelines and rendering rules (anti-hallucination, formatting, etc.)
+- After changing prompts, run `uv run python test_tool_selection.py` to check for tool selection regressions, then test with diverse e2e queries
 
 ### Switching LLM Provider
 
@@ -187,19 +186,19 @@ curl -s -X POST http://localhost:8090/ask \
 
 | Changed | Test |
 |---------|------|
-| `tools.py` | Verify the new/modified tool is called correctly with a relevant query |
-| `prompts.py` | Test with 5+ diverse queries to check for regressions |
+| `tools.py` | Run `uv run python test_tool_selection.py`, then verify e2e with a relevant query |
+| `prompts.py` | Run `uv run python test_tool_selection.py`, then test with 5+ diverse e2e queries |
 | `api_client.py` | Test with both reachable and unreachable services |
 | `main.py` | Test single-step and multi-step queries |
 | `config.py` | Test with different `.env` configurations |
 
 ### Checking the Debug Output
 
-The `/ask` response includes a `debug` field with the raw plans and tool results. Use this to verify:
-- The planner selected the right tool(s)
+The `/ask` response includes a `debug` field with iterations and tool results. Use this to verify:
+- The LLM selected the right tool(s) via native function calling
 - The correct parameters were sent
 - The API returned valid data
-- Multi-step plans executed in the right order
+- Multi-step queries executed in the right order
 
 ```bash
 # Pretty-print debug info
