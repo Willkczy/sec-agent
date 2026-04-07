@@ -12,3 +12,11 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "anyio[trio]>=4.0.0",
+    "pytest-anyio>=0.0.0",
+    "httpx>=0.24.0",
+]
