@@ -11,7 +11,9 @@ TOOLS = {
         "description": (
             "Search for mutual funds using natural language. "
             "Examples: 'low expense ratio large cap funds', 'top performing mid cap funds', "
-            "'SBI funds with high returns'. Returns ranked fund recommendations."
+            "'SBI funds with high returns'. "
+            "Returns ranked fund recommendations with fund names, ISINs, and key metrics. "
+            "Use this for discovering new funds — NOT for analyzing an existing portfolio."
         ),
         "endpoint": "/cr/src/get_query_data",
         "method": "POST",
@@ -50,7 +52,9 @@ TOOLS = {
     "swap_recommendations": {
         "description": (
             "Get better fund alternatives for a specific fund holding. "
-            "Finds funds ranked higher than the current holding based on returns, risk, or cost."
+            "Finds funds ranked higher than the current holding based on returns, risk, or cost. "
+            "Requires internal_security_id_list — use this when you already know which fund(s) "
+            "the user wants to replace."
         ),
         "endpoint": "/cr/src/swap_recommendations",
         "method": "POST",
@@ -216,9 +220,16 @@ TOOLS = {
     # =========================================================================
     "get_portfolio_options": {
         "description": (
-            "Build a model portfolio with fund options for a given investment amount, "
-            "risk preference, and investment type. Returns fund options per segment, "
-            "allocation percentages, default selections, backtest results, and metrics."
+            "Core portfolio recommendation endpoint. Given an investment amount and type "
+            "(LUMP_SUM or SIP), returns a complete model portfolio with recommended mutual funds, "
+            "allocation percentages, and a historical backtest with performance metrics (CAGR, "
+            "Sharpe ratio, max drawdown, 1Y/3Y/5Y returns). Also returns 5 alternative fund "
+            "choices per segment for the user to swap. Portfolio style is auto-determined from "
+            "the user's stored risk profile unless explicitly overridden via "
+            "portfolio_risk_preference. "
+            "The response ALREADY includes backtest results and performance metrics — "
+            "do NOT follow up with backtest_portfolio unless the user explicitly wants to "
+            "swap a fund and re-backtest."
         ),
         "endpoint": "/cr/model-portfolio/get_portfolio_options",
         "method": "POST",
@@ -261,8 +272,11 @@ TOOLS = {
     },
     "backtest_portfolio": {
         "description": (
-            "Run a backtest on a user-selected portfolio (after getting portfolio options). "
-            "Validates selected funds match required segments and returns performance metrics."
+            "Re-run a backtest ONLY when the user has swapped a fund in the default portfolio "
+            "returned by get_portfolio_options. Do NOT call this after get_portfolio_options — "
+            "that response already includes backtest results. Only use this when the user "
+            "explicitly wants to replace a default fund with an alternative and compare "
+            "updated performance metrics. Returns updated CAGR, Sharpe ratio, max drawdown."
         ),
         "endpoint": "/cr/model-portfolio/backtest_selected_portfolio",
         "method": "POST",
@@ -298,9 +312,11 @@ TOOLS = {
                 "type": "object",
                 "required": True,
                 "description": (
-                    "Selected funds per segment. Keys: equity, debt, alternatives, cash. "
-                    "Values: dict mapping segment name to ISIN. "
-                    'Example: {"equity": {"large_cap": "INF123..."}, "debt": {"gilt": "INF456..."}}'
+                    "User's custom fund selection after swapping. Keys: equity, debt, "
+                    "alternatives, cash. Values: dict mapping segment name to "
+                    "internal_security_id (numeric string). "
+                    'Example: {"equity": {"large_cap": "3310010938"}, '
+                    '"debt": {"gilt": "3310020456"}}'
                 ),
             },
             "plan_type": {
@@ -314,8 +330,10 @@ TOOLS = {
     },
     "portfolio_builder": {
         "description": (
-            "Legacy portfolio construction endpoint. Builds a portfolio with dynamic fund "
-            "selection and returns time series, metrics, and returns analysis."
+            "Builds and backtests a portfolio from user-selected funds. Use this when the "
+            "user has already chosen specific funds (after browsing options from "
+            "get_portfolio_options). Returns portfolio with amounts allocated, performance "
+            "metrics (CAGR, Sharpe ratio, max drawdown), and 1Y/3Y/5Y returns."
         ),
         "endpoint": "/cr/model-portfolio/portfolio_builder",
         "method": "POST",
@@ -355,8 +373,13 @@ TOOLS = {
     },
     "get_risk_profile": {
         "description": (
-            "Get a user's risk profile based on their stored attributes "
-            "(age, income, risk appetite). Returns overall risk profile and component scores."
+            "Returns the user's current overall risk profile (VERY_LOW, LOW, MEDIUM, HIGH, "
+            "VERY_HIGH) by looking up their saved profile data. For newer onboarding users, "
+            "portfolio style is retrieved directly. For older users, risk is inferred from "
+            "age, income, and stated risk appetite. Returns overall_risk_profile plus "
+            "component fields (age_range, income_range, risk_appetite — null for v2 users). "
+            "Note: get_portfolio_options auto-fetches the user's risk profile internally, "
+            "so you do NOT need to call get_risk_profile first when building a portfolio."
         ),
         "endpoint": "/cr/model-portfolio/get_risk_profile",
         "method": "POST",
@@ -370,9 +393,13 @@ TOOLS = {
     },
     "risk_profile_v2": {
         "description": (
-            "Enhanced risk profiling with detailed inputs. Calculates risk score based on "
-            "age, income, time horizon, willingness to lose, household factors, and health. "
-            "Returns portfolio style recommendation and allocation guidance."
+            "Calculates a detailed risk score based on personal and financial inputs. "
+            "Used during onboarding or profile updates — NOT for checking an existing "
+            "user's risk profile (use get_risk_profile for that). Blends financial risk "
+            "capacity (80% weight) with stated willingness to lose (20% weight). "
+            "Returns portfolio style recommendation (e.g. GROWTH, CONSERVATIVE) and "
+            "allocation guidance. Result is saved to DB and used automatically by "
+            "get_portfolio_options."
         ),
         "endpoint": "/cr/model-portfolio/risk_profile_v2",
         "method": "POST",
@@ -443,9 +470,12 @@ TOOLS = {
     },
     "single_goal_optimizer": {
         "description": (
-            "Calculate investment needed for a single financial goal. Optimizes portfolio "
-            "allocation to maximize success probability. Returns required SIP/lumpsum, "
-            "wealth projections (expected/worst/best case), and portfolio recommendations."
+            "Pure financial calculator — given how much someone can invest and for how long, "
+            "what are the chances of reaching a financial goal? Runs probability simulations "
+            "across portfolio types to find the one that maximizes success. No user_id required. "
+            "Returns success probability, optimal portfolio style, suggested equity %, and "
+            "expected/best/worst wealth projections. "
+            "Use this when the user has a specific goal with a target amount and timeline."
         ),
         "endpoint": "/cr/model-portfolio/single_goal_optimizer",
         "method": "POST",
@@ -524,9 +554,13 @@ TOOLS = {
     },
     "multi_goal_optimizer": {
         "description": (
-            "Optimize investment allocation across multiple competing financial goals. "
-            "Uses differential evolution to maximize weighted success probability. "
-            "Handles goal prioritization via tiers (CRITICAL, IMPORTANT, ASPIRATIONAL)."
+            "Splits a fixed corpus and monthly SIP across multiple financial goals to "
+            "maximize combined success. CRITICAL goals get 3x weight over ASPIRATIONAL. "
+            "Supports 1-10 goals. No user_id required. "
+            "Returns per-goal allocation (corpus %, SIP %), optimal portfolio per goal, "
+            "and individual success probabilities. "
+            "Use this when the user has multiple goals competing for the same money — "
+            "for a single goal, use single_goal_optimizer instead."
         ),
         "endpoint": "/cr/model-portfolio/multi_goal_optimizer",
         "method": "POST",
@@ -560,8 +594,11 @@ TOOLS = {
     },
     "goal_defaults": {
         "description": (
-            "Get default investment assumptions for goal planning. Returns recommended "
-            "SIP and lumpsum defaults (min/max/step) based on goal parameters."
+            "Given a goal target and time horizon, returns sensible default SIP and lumpsum "
+            "amounts that would give roughly 70-75% chance of success. Used to pre-fill "
+            "investment sliders so users have a realistic starting point. "
+            "Returns default/min/max/step for both SIP and lumpsum, plus the portfolio "
+            "assumptions (CAGR, volatility) used in the calculation."
         ),
         "endpoint": "/cr/model-portfolio/goal_defaults",
         "method": "POST",
@@ -586,8 +623,12 @@ TOOLS = {
     },
     "build_stock_portfolio": {
         "description": (
-            "Build a portfolio from individual stocks. Calculates sector and market cap "
-            "diversification, returns portfolio metrics and recommendations."
+            "Builds an optimized stock portfolio from a natural language query. Parses what "
+            "the user wants (e.g. 'large cap tech stocks'), filters the stock universe, then "
+            "selects and weights stocks to maximize risk-adjusted returns (Sharpe ratio). "
+            "Returns stock allocations with weights, sector/market cap breakdown, and "
+            "portfolio metrics. "
+            "NOTE: This endpoint is currently broken (returns HTTP 500). Do not use."
         ),
         "endpoint": "/cr/model-portfolio/build_stock_portfolio",
         "method": "POST",
@@ -601,8 +642,11 @@ TOOLS = {
     },
     "stock_to_fund": {
         "description": (
-            "Convert stock holdings to mutual fund recommendations. Analyzes existing "
-            "stock portfolio and suggests mutual funds to replace concentrated positions."
+            "Looks at the user's existing direct stock holdings and recommends equivalent "
+            "mutual funds with similar market exposure. Helps users transition from "
+            "concentrated stock positions to diversified fund exposure while maintaining "
+            "similar sector alignment. Returns fund recommendations matched to the user's "
+            "current stock sectors and market cap categories."
         ),
         "endpoint": "/cr/model-portfolio/stock_to_fund",
         "method": "POST",
@@ -634,11 +678,20 @@ TOOLS = {
     # =========================================================================
     "financial_engine": {
         "description": (
-            "Run portfolio analytics functions. Supported functions: "
-            "diversification, sector_breakdown, asset_breakdown, market_cap_breakdown, "
-            "single_holding_exposure, total_stock_exposure, amc_preference, "
-            "sector_preference, theme_preference, factor_preference. "
-            "Each function takes a parameters dict with user_id, org_id, and function-specific args."
+            "Analyses a user's existing portfolio. All functions are accessed via this single "
+            "endpoint using the function parameter. Available functions:\n"
+            "- diversification: measures portfolio concentration using top-5 and top-20 holding percentages\n"
+            "- sector_breakdown: portfolio exposure per market sector, plus overweight/underweight vs Nifty 500\n"
+            "- asset_breakdown: split across equity, debt, cash, others\n"
+            "- market_cap_breakdown: split across Large Cap, Mid Cap, Small Cap, others\n"
+            "- single_holding_exposure: total exposure to a specific stock (direct + indirect via funds, 2 levels deep). Requires holding_name in parameters\n"
+            "- total_stock_exposure: top-N stocks by exposure with per-fund contribution breakdown\n"
+            "- amc_preference: which AMCs the user is most concentrated in by value and fund count\n"
+            "- sector_preference: overweight/underweight sectors vs Nifty 500 benchmark\n"
+            "- theme_preference: thematic investment preferences (NOTE: currently placeholder — returns hardcoded data)\n"
+            "- factor_preference: style factor scores (Momentum, Value, Low Volatility, Quality) on 0-100 scale\n"
+            "Each function requires user_id (string) in the parameters dict. "
+            "single_holding_exposure also requires holding_name (string)."
         ),
         "endpoint": "/cr/fin-engine/financial_engine",
         "method": "POST",
@@ -677,7 +730,9 @@ TOOLS = {
     "ml_fund_discovery": {
         "description": (
             "Get personalized fund recommendations using collaborative filtering (ML-based). "
-            "Finds funds similar to what users with similar portfolios hold."
+            "Finds funds similar to what users with similar portfolios hold. "
+            "Different from search_funds — this uses the user's existing portfolio to find "
+            "funds that similar investors hold, rather than searching by criteria."
         ),
         "endpoint": "/cr/mlr/fund_discovery",
         "method": "POST",
