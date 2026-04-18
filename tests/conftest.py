@@ -74,6 +74,21 @@ def tool_names(message):
     return sorted(tc["name"] for tc in extract_tool_calls(message))
 
 
+def get_fe_functions(message):
+    """Return sorted list of financial_engine function params from a message."""
+    calls = extract_tool_calls(message)
+    return sorted(
+        c["params"].get("function", "")
+        for c in calls
+        if c["name"] == "financial_engine"
+    )
+
+
+def matches_any(selected: list[str], acceptable: list[list[str]]) -> bool:
+    """Check if selected tools match any of the acceptable options."""
+    return any(sorted(selected) == sorted(option) for option in acceptable)
+
+
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures (created once per test session)
 # ---------------------------------------------------------------------------
@@ -87,10 +102,7 @@ def openai_tools():
 
 @pytest.fixture(scope="session")
 def llm_client():
-    """AsyncOpenAI client pointed at the self-hosted LLM.
-
-    Skips all dependent tests if the LLM is unreachable.
-    """
+    """AsyncOpenAI client pointed at the self-hosted LLM."""
     client = AsyncOpenAI(
         base_url=settings.LLM_BASE_URL,
         api_key=settings.LLM_API_KEY,
