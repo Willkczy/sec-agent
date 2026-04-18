@@ -23,3 +23,11 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scratch LLM ping script (not pytest)
+test_llm_service.py
+
+# Generated HTML export of test-queries.md
+docs/test-queries.html
+docs/test-queries_files/
+
