@@ -3,16 +3,24 @@ Async HTTP client for calling securities-recommendation microservice endpoints.
 """
 
 import json
-import aiohttp
+import re
 from typing import Any
+
+import aiohttp
 
 
 class APIClient:
     """Simple async HTTP client for calling the securities-recommendation APIs."""
 
-    def __init__(self, base_url: str, enable_auth: bool = False, timeout: int = 60):
+    # Prefixes added by the reverse proxy in deployed environments.
+    # In local_mode we strip them so the request goes straight to a service
+    # bound on its own port with no proxy in front.
+    _SERVICE_PREFIX_RE = re.compile(r"^/cr/(src|fin-engine|model-portfolio|mlr)")
+
+    def __init__(self, base_url: str, enable_auth: bool = False, local_mode: bool = False, timeout: int = 60):
         self.base_url = base_url.rstrip("/")
         self.enable_auth = enable_auth
+        self.local_mode = local_mode
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
     async def _get_auth_headers(self, url: str) -> dict[str, str]:
@@ -38,6 +46,8 @@ class APIClient:
         Returns:
             JSON response as dict, or error dict on failure.
         """
+        if self.local_mode:
+            endpoint = self._SERVICE_PREFIX_RE.sub("", endpoint, count=1)
         url = self.base_url + endpoint
         headers = {"Content-Type": "application/json"}
         headers.update(await self._get_auth_headers(url))

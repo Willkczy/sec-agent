@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     # Auth toggle (False for local, True for deployed)
     ENABLE_AUTH: bool = False
 
+    # Local mode: strips /cr/src, /cr/fin-engine, etc. prefixes from endpoints
+    # Set to true when running backend services locally without a reverse proxy
+    LOCAL_MODE: bool = False
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

@@ -33,10 +33,29 @@ llm_client = AsyncOpenAI(
 api_client = APIClient(
     base_url=settings.API_BASE_URL,
     enable_auth=settings.ENABLE_AUTH,
+    local_mode=settings.LOCAL_MODE,
 )
 
 # Pre-build the OpenAI tools list (static across requests)
 OPENAI_TOOLS = get_openai_tools()
+
+
+# Backend pydantic models declare these as int. The LLM sometimes emits them
+# as quoted strings; pydantic strict-mode rejects, fin-engine returns 500.
+# Coerce here so tool-calling is deterministic regardless of LLM variance.
+_INT_FIELDS = {"org_id", "max_stocks", "top_n"}
+
+
+def _coerce_int_fields(obj: Any) -> Any:
+    """Recursively cast known int fields from numeric-string to int."""
+    if isinstance(obj, dict):
+        return {
+            k: (int(v) if k in _INT_FIELDS and isinstance(v, str) and v.lstrip("-").isdigit() else _coerce_int_fields(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_coerce_int_fields(x) for x in obj]
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +80,7 @@ class Agent:
         tool_def = TOOLS.get(tool_name)
         if tool_def is None:
             return {"error": f"Unknown tool: {tool_name}"}
+        params = _coerce_int_fields(params)
         return await self.api.call_tool(tool_def["endpoint"], params)
 
     # -- Main orchestration loop --------------------------------------------
