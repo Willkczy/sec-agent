@@ -30,4 +30,6 @@ test_llm_service.py
 # Generated HTML export of test-queries.md
 docs/test-queries.html
 docs/test-queries_files/
+docs/demo-queries.html
+docs/demo-queries_files/
 
