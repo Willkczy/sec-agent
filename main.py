@@ -80,6 +80,7 @@ class Agent:
         tool_def = TOOLS.get(tool_name)
         if tool_def is None:
             return {"error": f"Unknown tool: {tool_name}"}
+        params = _coerce_int_fields(params)
         return await self.api.call_tool(tool_def["endpoint"], params)
 
     # -- Main orchestration loop --------------------------------------------
