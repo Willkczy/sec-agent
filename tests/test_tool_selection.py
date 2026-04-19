@@ -619,16 +619,43 @@ class TestMPNonUserSingleTool:
         assert await majority_vote(check)
 
     @pytest.mark.anyio
-    async def test_s5_build_stock_portfolio_avoided(self, ask_llm):
-        """MP-NU-S5: build_stock_portfolio is marked broken (HTTP 500).
-        The LLM should NOT call it. It may fall back to search_funds or
-        respond with text explaining the limitation."""
+    async def test_s5_build_stock_portfolio(self, ask_llm):
+        """MP-NU-S5: build_stock_portfolio should be selected and pass
+        the NL description through `query`, with `max_stocks` honored."""
 
         async def check():
             msg = await ask_llm(
                 "Build me a large cap stock portfolio with up to 10 stocks."
             )
-            return "build_stock_portfolio" not in tool_names(msg)
+            calls = extract_tool_calls(msg)
+            if not calls or calls[0]["name"] != "build_stock_portfolio":
+                return False
+            params = calls[0]["params"]
+            return (
+                isinstance(params.get("query"), str)
+                and params["query"].strip() != ""
+                and params.get("max_stocks") == 10
+            )
+
+        assert await majority_vote(check)
+
+    @pytest.mark.anyio
+    async def test_loan_financed_goal_defaults(self, ask_llm):
+        """A loan-financed goal should surface `loan_financing_amount`
+        so the backend can subtract it from the target corpus."""
+
+        async def check():
+            msg = await ask_llm(
+                "I need 50 lakhs for a house in 10 years, and 20 lakhs of "
+                "that will come from a home loan. What's the default monthly SIP?"
+            )
+            calls = extract_tool_calls(msg)
+            for c in calls:
+                if c["name"] in ("goal_defaults", "single_goal_optimizer"):
+                    amt = c["params"].get("loan_financing_amount")
+                    if isinstance(amt, (int, float)) and amt > 0:
+                        return True
+            return False
 
         assert await majority_vote(check)
 
