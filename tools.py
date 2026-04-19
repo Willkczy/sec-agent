@@ -550,6 +550,11 @@ TOOLS = {
                 "description": "If true, include fund options in response",
                 "default": False,
             },
+            "loan_financing_amount": {
+                "type": "number",
+                "required": False,
+                "description": "Amount covered by loan — subtracted from target amount",
+            },
         },
     },
     "multi_goal_optimizer": {
@@ -619,24 +624,47 @@ TOOLS = {
                 "description": "Type of goal",
                 "default": "WEALTH_CREATION",
             },
+            "loan_financing_amount": {
+                "type": "number",
+                "required": False,
+                "description": "Amount covered by loan — subtracted from target before calculating defaults",
+            },
         },
     },
     "build_stock_portfolio": {
         "description": (
             "Builds an optimized stock portfolio from a natural language query. Parses what "
-            "the user wants (e.g. 'large cap tech stocks'), filters the stock universe, then "
-            "selects and weights stocks to maximize risk-adjusted returns (Sharpe ratio). "
-            "Returns stock allocations with weights, sector/market cap breakdown, and "
-            "portfolio metrics. "
-            "NOTE: This endpoint is currently broken (returns HTTP 500). Do not use."
+            "the user wants (e.g. 'large cap tech stocks'), filters the stock universe to "
+            "matching sectors/market caps, then selects and weights stocks to maximize "
+            "Sharpe ratio. Returns stock allocations with weights, sector/market cap "
+            "breakdown, and portfolio metrics."
         ),
         "endpoint": "/cr/model-portfolio/build_stock_portfolio",
         "method": "POST",
         "parameters": {
-            "stocks": {
-                "type": "array",
+            "query": {
+                "type": "string",
                 "required": True,
-                "description": "List of stocks with weights: [{symbol, weight}, ...]",
+                "description": (
+                    "Natural language description of the desired portfolio, "
+                    "e.g. 'Build me a large cap tech portfolio'"
+                ),
+            },
+            "sectors": {
+                "type": "array",
+                "required": False,
+                "description": "Optional sector filter override (bypasses NL parsing)",
+            },
+            "market_caps": {
+                "type": "array",
+                "required": False,
+                "description": "Optional market cap filter (e.g. ['Large Cap', 'Mid Cap'])",
+            },
+            "max_stocks": {
+                "type": "integer",
+                "required": False,
+                "description": "Maximum stocks in portfolio (2-20)",
+                "default": 10,
             },
         },
     },
@@ -685,7 +713,7 @@ TOOLS = {
             "- asset_breakdown: split across equity, debt, cash, others\n"
             "- market_cap_breakdown: split across Large Cap, Mid Cap, Small Cap, others\n"
             "- single_holding_exposure: total exposure to a specific stock (direct + indirect via funds, 2 levels deep). Requires holding_name in parameters\n"
-            "- total_stock_exposure: top-N stocks by exposure with per-fund contribution breakdown\n"
+            "- total_stock_exposure: top-N stocks by exposure with per-fund contribution breakdown. Accepts optional top_n (int, default 5)\n"
             "- amc_preference: which AMCs the user is most concentrated in by value and fund count\n"
             "- sector_preference: overweight/underweight sectors vs Nifty 500 benchmark\n"
             "- theme_preference: thematic investment preferences (NOTE: currently placeholder — returns hardcoded data)\n"
@@ -719,7 +747,8 @@ TOOLS = {
                 "description": (
                     "Function-specific parameters dict. Common fields: user_id (str), "
                     "org_id (int), external_user_id (str). Some functions need additional "
-                    "fields like security_name for single_holding_exposure."
+                    "fields: holding_name (str) for single_holding_exposure; "
+                    "top_n (int, default 5) for total_stock_exposure."
                 ),
             },
         },
