@@ -54,7 +54,14 @@ sec-agent/
 ├── models.py              # Pydantic request/response models
 ├── api_client.py          # Async HTTP client for microservice calls
 ├── config.py              # Settings (env-based configuration)
-├── test_tool_selection.py # Dry-run tool selection tests (15 cases)
+├── tests/
+│   ├── conftest.py                           # ask_llm fixture, majority_vote, helpers
+│   ├── test_tool_selection_single.py         # Glass-Box single-tool cases
+│   ├── test_tool_selection_multi.py          # Glass-Box multi-tool cases
+│   ├── test_tool_selection_disambiguation.py # negative assertions
+│   ├── test_tool_selection_src.py            # non-Glass-Box SRC tools
+│   ├── test_tool_selection_ml.py             # ml_fund_discovery
+│   └── test_agent_*.py / test_api_client.py / test_fastapi_app.py / test_tools_registry.py
 ├── pyproject.toml         # uv project dependencies
 └── .env.example           # Environment variable template
 ```

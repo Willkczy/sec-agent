@@ -139,7 +139,7 @@ Example:
 ### Modifying Prompts
 
 - System prompt is in `prompts.py:SYSTEM_PROMPT` — contains both tool-use guidelines and rendering rules (anti-hallucination, formatting, etc.)
-- After changing prompts, run `uv run python test_tool_selection.py` to check for tool selection regressions, then test with diverse e2e queries
+- After changing prompts, run `uv run pytest tests/test_tool_selection_single.py tests/test_tool_selection_multi.py tests/test_tool_selection_disambiguation.py -m llm` to check for tool selection regressions, then test with diverse e2e queries
 
 ### Switching LLM Provider
 
@@ -186,11 +186,30 @@ curl -s -X POST http://localhost:8090/ask \
 
 | Changed | Test |
 |---------|------|
-| `tools.py` | Run `uv run python test_tool_selection.py`, then verify e2e with a relevant query |
-| `prompts.py` | Run `uv run python test_tool_selection.py`, then test with 5+ diverse e2e queries |
+| `tools.py` | `uv run pytest tests/ -m llm`, then verify e2e with a relevant query |
+| `prompts.py` | `uv run pytest tests/ -m llm`, then test with 5+ diverse e2e queries |
 | `api_client.py` | Test with both reachable and unreachable services |
 | `main.py` | Test single-step and multi-step queries |
 | `config.py` | Test with different `.env` configurations |
+
+### Test Layout
+
+```
+tests/
+├── test_tool_selection_single.py         # Glass-Box single-tool cases
+├── test_tool_selection_multi.py          # Glass-Box multi-tool cases
+├── test_tool_selection_disambiguation.py # negative assertions
+├── test_tool_selection_src.py            # non-Glass-Box SRC tools
+└── test_tool_selection_ml.py             # non-Glass-Box ML tool
+```
+
+Glass-Box queries come from [Reasoning_LLM_TiFin/example_data](../Reasoning_LLM_TiFin/example_data/)
+(`data-fe.json`, `data-v0-mp_user_split.json`, `data-v0-mp_nonuser_split.json`). Each test
+preserves the `q1` text verbatim and appends `(user ..., org ...)` context.
+
+Tests are marked `@pytest.mark.llm` and use a 3-run majority-vote retry
+pattern. Set `STRICT_MODE=1` to disable retries and assert deterministic
+single-shot behavior.
 
 ### Checking the Debug Output
 

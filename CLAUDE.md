@@ -29,8 +29,14 @@ uv run uvicorn main:app --port 8091
 # Quick syntax check
 uv run python -c "from main import app; print('OK')"
 
-# Run tool selection tests (dry-run, no backend needed)
-uv run python test_tool_selection.py
+# Run LLM tool-selection tests (no backend needed; VPN-reachable LLM required)
+uv run pytest tests/ -m llm
+
+# Unit-only (no LLM, no backend)
+uv run pytest tests/ -m "not llm and not e2e"
+
+# Deterministic single-shot instead of 3-run majority vote
+STRICT_MODE=1 uv run pytest tests/ -m llm
 
 # Test the endpoint (use user 1912650190 — verified with portfolio data)
 curl -s -X POST http://localhost:8090/ask -H "Content-Type: application/json" -d '{"query": "Show sector breakdown for user 1912650190"}'
@@ -45,7 +51,15 @@ prompts.py             → Unified SYSTEM_PROMPT (tool-use guidelines + renderin
 api_client.py          → APIClient class (aiohttp POST to microservices)
 config.py              → Settings from .env (API URL, LLM endpoint, auth toggle)
 models.py              → AskRequest / AskResponse Pydantic models
-test_tool_selection.py → Dry-run tool selection tests (15 cases, no backend needed)
+
+tests/
+├── conftest.py                           → ask_llm fixture, majority_vote, helpers
+├── test_tool_selection_single.py         → single-tool Glass-Box cases (FE S1-S10, MP user S1-S5/S11, MP non-user S1-S5) + determine_income_sector
+├── test_tool_selection_multi.py          → multi-tool Glass-Box cases (FE S11-S20, MP user S6-S10, MP non-user S7-S10) + SRC NL-to-ID chains
+├── test_tool_selection_disambiguation.py → negative assertions (risk_profile vs risk_profile_v2, single vs multi goal, fund_search vs financial_engine, etc.)
+├── test_tool_selection_src.py            → non-Glass-Box SRC tools (search_funds, get_fund_peers, swap_recommendations, portfolio_swap_recommendations, stock_research_data, can_support)
+├── test_tool_selection_ml.py             → ml_fund_discovery (non-Glass-Box)
+├── test_agent_*.py / test_api_client.py / test_fastapi_app.py / test_tools_registry.py → unit + e2e tests
 ```
 
 **Data flow:** User query + tool schemas → LLM returns tool_calls → HTTP calls to backend → results fed back → LLM responds with text
