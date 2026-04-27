@@ -5,7 +5,7 @@ Validates the tool registry schema and the OpenAI conversion function.
 
 import re
 import pytest
-from tools import TOOLS, get_openai_tools
+from tools import TOOLS, ACTIVE_TOOLS, get_openai_tools
 
 
 pytestmark = pytest.mark.unit
@@ -97,8 +97,8 @@ class TestGetOpenAITools:
     def test_returns_list(self):
         assert isinstance(self.openai_tools, list)
 
-    def test_count_matches_registry(self):
-        assert len(self.openai_tools) == len(TOOLS)
+    def test_count_matches_active_set(self):
+        assert len(self.openai_tools) == len(ACTIVE_TOOLS)
 
     def test_each_tool_has_correct_structure(self):
         for tool in self.openai_tools:
@@ -135,7 +135,29 @@ class TestGetOpenAITools:
                         f"Tool '{name}' param '{param_name}' enum not preserved"
                     )
 
-    def test_all_registry_names_present(self):
+    def test_active_tools_match_openai_schema(self):
         openai_names = {t["function"]["name"] for t in self.openai_tools}
-        registry_names = set(TOOLS.keys())
-        assert openai_names == registry_names
+        assert openai_names == ACTIVE_TOOLS
+
+    def test_no_src_or_ml_tools_active(self):
+        """SRC and ML tools must not appear in the LLM-visible schema —
+        Glass-Box has no descriptions for them and they would route to a
+        Reasoner with nothing to ground against."""
+        SRC_TOOLS = {
+            "search_funds",
+            "swap_recommendations",
+            "portfolio_swap_recommendations",
+            "get_fund_peers",
+            "stock_research_data",
+            "parse_query",
+            "can_support",
+        }
+        ML_TOOLS = {"ml_fund_discovery"}
+        OTHER_EXCLUDED = {"determine_income_sector", "build_stock_portfolio"}
+        forbidden = SRC_TOOLS | ML_TOOLS | OTHER_EXCLUDED
+        leaked = forbidden & ACTIVE_TOOLS
+        assert not leaked, f"Forbidden tools active: {leaked}"
+
+    def test_active_tools_subset_of_registry(self):
+        unknown = ACTIVE_TOOLS - set(TOOLS.keys())
+        assert not unknown, f"ACTIVE_TOOLS references unknown tools: {unknown}"
