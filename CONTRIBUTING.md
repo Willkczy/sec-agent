@@ -2,14 +2,20 @@
 
 ## Project Goal
 
-This agent's ultimate goal is not just to call APIs and return results — it's to **explain the logic and assumptions behind those results**. When evaluating contributions, ask: "does this move us closer to the agent being able to answer *why* and *how*, not just *what*?"
+The agent's job is not to relay numbers — it is to **explain the logic and assumptions behind those numbers**. This is achieved by handing the live tool outputs to the [Reasoning_LLM_TiFin](../Reasoning_LLM_TiFin) Glass-Box reasoner; the tool-calling LLM never writes the final answer.
 
-See [README.md](README.md#project-goal) for the full problem statement and approaches being explored.
+When evaluating a contribution, ask: "does this preserve the boundary between tool selection (this repo) and answer reasoning (Glass-Box)?" See [README.md](README.md#glass-box-reasoning-integration) for the integration overview and [README's Integration Progress table](README.md#integration-progress) for what's done and what's pending.
 
 ## Development Setup
 
 ```bash
-# Clone and enter the project
+# Clone the sibling repos so sys.path can find Reasoning_LLM_TiFin
+# Layout expected:
+#   Capstone/
+#     sec-agent/
+#     Reasoning_LLM_TiFin/
+#     securities-recommendation/
+
 cd sec-agent
 
 # Install dependencies with uv
@@ -17,15 +23,17 @@ uv sync
 
 # Copy environment config
 cp .env.example .env
-# Edit .env to configure your LLM provider (see README for options)
+# Edit .env — at minimum set LLM_BASE_URL, LLM_API_KEY, REASONING_ARCHITECTURE
 
 # Run the server locally
 uv run uvicorn main:app --port 8090 --reload
 ```
 
+`reasoning_adapter.py` adds `../Reasoning_LLM_TiFin` to `sys.path` at import time — there is no pip install. The Glass-Box repo must exist at the sibling path or the agent will fail at startup.
+
 ### GCP Credentials
 
-Backend services (securities-recommendation) call external APIs that require GCP S2S authentication. To run them locally:
+Backend services (`securities-recommendation`) call external APIs that require GCP S2S authentication. To run them locally:
 
 ```bash
 # Option 1: Service account key (recommended)
@@ -35,27 +43,27 @@ export GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json'
 gcloud auth application-default login
 ```
 
-Without this, backend services will return 500 errors when they try to fetch user portfolios or security data.
+Without this, backend services return 500s when fetching user portfolios or security data.
 
 ### Running Backend Services
 
-The agent calls backend services at `API_BASE_URL` (default: `http://localhost:8089`). You can run individual services:
+The agent calls backend services at `API_BASE_URL` (default `http://localhost:8089`). You only need to run the service(s) relevant to the tools you're testing.
 
 ```bash
 cd ../securities-recommendation
 
-# Financial engine (no LLM dependency)
+# Financial engine (no LLM dependency on the backend side)
 GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json' \
 API_BASE_URL='https://api.askmyfi.dev' \
 uvicorn services.financial_engine.main:app --host 0.0.0.0 --port 8089
 
-# ML recommendations (no LLM dependency)
+# Model portfolio
 GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json' \
 API_BASE_URL='https://api.askmyfi.dev' \
-uvicorn services.ml_recommendations.main:app --host 0.0.0.0 --port 8089
+uvicorn services.model_portfolio.main:app --host 0.0.0.0 --port 8089
 ```
 
-> **Tip:** You only need to run the service(s) relevant to the tools you're testing. See README for which tools map to which service.
+Only Financial Engine and Model Portfolio are exercised by `ACTIVE_TOOLS`. SRC and ML services are reserved (see README).
 
 ## Git Workflow
 
@@ -70,25 +78,25 @@ docs/<short-description>       # Documentation only
 
 ### Commit Messages
 
-Use imperative mood, keep the first line under 72 characters:
+Imperative mood, first line under 72 chars:
 
 ```
-Add multi-step planning for fund comparison queries
-Fix JSON parsing when LLM returns markdown fences
-Update render prompt with stricter anti-hallucination rules
+Add session_id field to AskRequest
+Fix verifier feedback not propagated on retry
+Update reasoning adapter mapping for goal_defaults
 ```
 
 ### Pull Requests
 
-1. Create a feature branch from `main`
-2. Make your changes (keep PRs focused — one feature/fix per PR)
-3. Test locally against the securities-recommendation services
+1. Branch from `main`
+2. Keep PRs focused — one feature/fix per PR
+3. Test locally against `securities-recommendation` services and the Glass-Box reasoner
 4. Open a PR with a clear description of what changed and why
 5. Request review from at least one teammate
 
 ### Git Rules
 
-- **Never** use `git add -A` or `git add .` — always add files explicitly
+- **Never** `git add -A` or `git add .` — always add files explicitly
 - **Never** commit `.env` files or credentials
 - **Never** force-push to `main`
 
@@ -96,139 +104,157 @@ Update render prompt with stricter anti-hallucination rules
 
 ### Code Style
 
-- Python 3.12+ features are fine (`dict[str, Any]` instead of `Dict[str, Any]`, etc.)
-- Use type annotations on all function signatures
-- Use `async/await` for all I/O operations (HTTP calls, LLM calls)
-- Keep functions short and focused — if a function does too much, split it
+- Python 3.12+ features (`dict[str, Any]`, `X | None`, etc.)
+- Type annotations on all function signatures
+- `async/await` for I/O (HTTP calls, LLM calls); sync Glass-Box calls go through `asyncio.to_thread` in the adapter
+- Keep functions short and focused
 
 ### File Responsibilities
 
-Each file has a single responsibility. Don't blur the lines:
-
 | File | Owns | Does NOT own |
-|------|------|-------------|
-| `tools.py` | Tool definitions, parameter schemas | HTTP calls, LLM calls |
-| `api_client.py` | HTTP requests to microservices | Tool selection, response formatting |
-| `prompts.py` | System prompt text | LLM client calls |
-| `main.py` | Orchestration loop, FastAPI app | Tool schemas, prompt text |
-| `config.py` | Settings and env loading | Business logic |
-| `models.py` | Request/response Pydantic models | Validation logic beyond types |
+|---|---|---|
+| `tools.py` | `TOOLS` registry, `ACTIVE_TOOLS` allowlist, OpenAI schema conversion | HTTP calls, LLM calls, api_key resolution |
+| `api_client.py` | HTTP requests to backend microservices | Tool selection, response formatting |
+| `prompts.py` | System prompt for the **tool-calling LLM only** (not the Reasoner/Answerer) | Reasoner/Answerer prompts (those live in `Reasoning_LLM_TiFin`) |
+| `main.py` | Tool-call loop, session loading, hand-off to reasoner, FastAPI app | Tool schemas, prompt text, mapping logic |
+| `config.py` | Settings + env loading (includes `REASONING_ARCHITECTURE`) | Business logic |
+| `models.py` | `AskRequest` / `AskResponse` Pydantic models | Validation logic beyond types |
+| `reasoning_adapter.py` | sec-agent ↔ Glass-Box bridge: tool→api_key mapping, output unwrap, model singleton, `build_inputs` + `answer` | Glass-Box prompts or model internals |
+| `session_store.py` | Per-`session_id` history + cache + trimming | Reasoning, tool calls, persistence |
 
 ### Adding a New Tool
 
-1. **Define it in `tools.py`** — add an entry to the `TOOLS` dict with description, endpoint, method, and parameter schema
-2. **That's it** — `get_openai_tools()` auto-converts the registry into OpenAI function-calling schema, and the agent dispatches by looking up the endpoint
+A new tool needs four touchpoints. The validation tests will fail until all four are in place.
 
-Example:
-```python
-# In tools.py, add to the TOOLS dict:
-"new_tool_name": {
-    "description": "What this tool does (shown to the LLM via function calling)",
-    "endpoint": "/cr/service-name/endpoint-path",
-    "method": "POST",
-    "parameters": {
-        "param_name": {
-            "type": "string",
-            "required": True,
-            "description": "What this param is for",
-        },
-    },
-},
-```
+1. **Add to `TOOLS` in `tools.py`** — description, endpoint, method, parameter schema. This makes it dispatchable.
+
+   ```python
+   "new_tool_name": {
+       "description": "What this tool does (visible to the LLM)",
+       "endpoint": "/cr/service-name/endpoint-path",
+       "method": "POST",
+       "parameters": {
+           "param_name": {
+               "type": "string",
+               "required": True,
+               "description": "What this param is for",
+           },
+       },
+   },
+   ```
+
+2. **Add to `ACTIVE_TOOLS` in `tools.py`** — the allowlist filters which tools are exposed to the LLM via `get_openai_tools()`.
+
+3. **Add adapter mapping in `reasoning_adapter.py`** — if the tool name matches the Glass-Box api_key, just add to `_DIRECT_TOOL_TO_KEY`. If the tool dispatches via a parameter (like `financial_engine` does on `function`), or splits into multiple api_keys (like `get_portfolio_options` does on `investment_type`), add a branch in `_resolve_api_key`.
+
+4. **Add a description in `Reasoning_LLM_TiFin/services/glass_box/data/all_api_descriptions.json`** — the Reasoner needs `name`, `service`, `description`, `parameters`, `calculation_logic`, `response`. Without this entry, `tests/test_reasoning_adapter.py::TestDescriptionCoverage` will fail.
+
+5. **Add a sample invocation in `_SAMPLE_INVOCATIONS`** in `tests/test_reasoning_adapter.py` so the description-coverage test exercises the new branch.
 
 ### Modifying Prompts
 
-- System prompt is in `prompts.py:SYSTEM_PROMPT` — contains both tool-use guidelines and rendering rules (anti-hallucination, formatting, etc.)
-- After changing prompts, run `uv run pytest tests/test_tool_selection_single.py tests/test_tool_selection_multi.py tests/test_tool_selection_disambiguation.py -m llm` to check for tool selection regressions, then test with diverse e2e queries
+- `prompts.py::SYSTEM_PROMPT` is for the **tool-calling LLM only**. It controls tool selection and the out-of-scope handler. It does NOT write the user-facing answer.
+- Reasoner / Answerer / Verifier prompts live in `Reasoning_LLM_TiFin/services/glass_box/data/system_prompt_*.md`. To change how the Glass-Box reasons, edit those files in that repo, not here.
+- After changing `SYSTEM_PROMPT`, run the LLM-marked tool-selection tests to check for routing regressions:
+
+  ```bash
+  uv run pytest tests/test_tool_selection_single.py tests/test_tool_selection_multi.py tests/test_tool_selection_disambiguation.py -m llm
+  ```
 
 ### Switching LLM Provider
 
-The agent uses `openai.AsyncOpenAI` which supports any OpenAI-compatible API. To switch providers, just update `.env` with the new base URL, API key, and model name — no code changes needed.
+- The **tool-calling LLM** is set in sec-agent's `.env` (`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`). Any OpenAI-compatible API with native function calling works.
+- The **Glass-Box LLM** is set independently inside `Reasoning_LLM_TiFin` (`MODEL_PROVIDER`, `GPU_BASE_URL`, `OPENAI_API_KEY`). Both can point at the same endpoint or different ones.
 
-## Testing
+### Reasoning Architecture Toggle
 
-### Manual Testing
-
-Start the agent and the relevant backend service(s), then test with curl:
-
-```bash
-# Portfolio analytics — financial engine (no self-hosted LLM needed)
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Show sector breakdown for user 1912650190"}' | python3 -m json.tool
-
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is the exposure to HDFC Bank for user 1912650190?"}' | python3 -m json.tool
-
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Show market cap breakdown for user 1912650190"}' | python3 -m json.tool
-
-# Fund search — SRC service (requires self-hosted LLM for NER)
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Show me top 3 large cap funds"}' | python3 -m json.tool
-
-# Goal planning — model portfolio service (no self-hosted LLM needed)
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "I want to save 50 lakhs for retirement in 20 years, investing 10000 per month via SIP"}' | python3 -m json.tool
+```env
+REASONING_ARCHITECTURE=two_layer   # default — Reasoner + Answerer
+REASONING_ARCHITECTURE=three_layer # adds Verifier with up to 2 retries
 ```
 
-### Test User IDs
+Three-layer is slower but stricter. `debug.reasoning.verifier_verdict` and `verifier_retries` populate when the three-layer pipeline is active. The model is lazy-instantiated as a module-level singleton; restart the process to pick up a new architecture value.
 
-| User ID | Has Portfolio Data | Notes |
-|---------|-------------------|-------|
-| `1912650190` | Yes | Verified working for all financial engine functions |
-
-### What to Test After Changes
-
-| Changed | Test |
-|---------|------|
-| `tools.py` | `uv run pytest tests/ -m llm`, then verify e2e with a relevant query |
-| `prompts.py` | `uv run pytest tests/ -m llm`, then test with 5+ diverse e2e queries |
-| `api_client.py` | Test with both reachable and unreachable services |
-| `main.py` | Test single-step and multi-step queries |
-| `config.py` | Test with different `.env` configurations |
+## Testing
 
 ### Test Layout
 
 ```
 tests/
-├── test_tool_selection_single.py         # Glass-Box single-tool cases
-├── test_tool_selection_multi.py          # Glass-Box multi-tool cases
-├── test_tool_selection_disambiguation.py # negative assertions
-├── test_tool_selection_src.py            # non-Glass-Box SRC tools
-└── test_tool_selection_ml.py             # non-Glass-Box ML tool
+├── conftest.py
+├── test_agent_unit.py                    # Agent.run with stubbed LLM + reasoner
+├── test_agent_session.py                 # Session continuity, isolation, trimming
+├── test_agent_e2e.py                     # End-to-end against live LLM/backend
+├── test_reasoning_adapter.py             # Mapping, build_inputs, verifier metadata
+├── test_session_store.py                 # Per-session state semantics
+├── test_tools_registry.py                # Active vs reserved, schema validity
+├── test_api_client.py
+├── test_fastapi_app.py
+├── test_parameter_extraction.py
+├── test_tool_selection_single.py         # Glass-Box-aligned single-tool LLM cases
+├── test_tool_selection_multi.py          # Glass-Box-aligned multi-tool LLM cases
+├── test_tool_selection_disambiguation.py # Negative tool-routing assertions
+├── test_tool_selection_src.py            # SRC reference suite (tools currently reserved)
+└── test_tool_selection_ml.py             # ML reference suite (tool currently reserved)
 ```
 
-Glass-Box queries come from [Reasoning_LLM_TiFin/example_data](../Reasoning_LLM_TiFin/example_data/)
-(`data-fe.json`, `data-v0-mp_user_split.json`, `data-v0-mp_nonuser_split.json`). Each test
-preserves the `q1` text verbatim and appends `(user ..., org ...)` context.
+Tests with `@pytest.mark.unit` run with no external dependencies. Tests with `@pytest.mark.llm` need an LLM endpoint reachable. Tests with `@pytest.mark.e2e` need both LLM and backend.
 
-Tests are marked `@pytest.mark.llm` and use a 3-run majority-vote retry
-pattern. Set `STRICT_MODE=1` to disable retries and assert deterministic
-single-shot behavior.
-
-### Checking the Debug Output
-
-The `/ask` response includes a `debug` field with iterations and tool results. Use this to verify:
-- The LLM selected the right tool(s) via native function calling
-- The correct parameters were sent
-- The API returned valid data
-- Multi-step queries executed in the right order
+### Common Test Commands
 
 ```bash
-# Pretty-print debug info
+# Pure unit tests (no LLM, no backend)
+uv run pytest tests/ -m "unit and not llm and not e2e"
+
+# LLM tool-selection regressions (needs LLM endpoint)
+uv run pytest tests/ -m llm
+
+# Single deterministic shot instead of 3-run majority vote
+STRICT_MODE=1 uv run pytest tests/ -m llm
+```
+
+The SRC and ML tool-selection suites stay in the repo as a reference for the day those tools come back into `ACTIVE_TOOLS`. They are not run by default.
+
+### What to Test After Changes
+
+| Changed | Test |
+|---|---|
+| `tools.py` (registry) | `uv run pytest tests/test_tools_registry.py` |
+| `tools.py` (`ACTIVE_TOOLS`) | `tests/test_tools_registry.py` + `tests/test_reasoning_adapter.py::TestDescriptionCoverage` |
+| `reasoning_adapter.py` | `tests/test_reasoning_adapter.py` + `tests/test_agent_session.py` |
+| `session_store.py` | `tests/test_session_store.py` + `tests/test_agent_session.py` |
+| `main.py` (Agent loop) | `tests/test_agent_unit.py` + `tests/test_agent_session.py` |
+| `prompts.py` | `tests/ -m llm` then test 5+ diverse e2e queries |
+| `api_client.py` | `tests/test_api_client.py` + a real backend smoke |
+| `config.py` | All unit tests (config touches everything) |
+
+### Manual Testing
+
+```bash
+# First turn — fires a tool
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "your query"}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d['debug'], indent=2))"
+  -d '{"query": "Show sector breakdown for user 1912650190", "session_id": "smoke-1"}' \
+  | python3 -m json.tool
+
+# Follow-up — should NOT re-fire the tool; cache is reused
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How was that calculated?", "session_id": "smoke-1"}' \
+  | python3 -m json.tool
+
+# Out-of-scope (no tool fires, no cache) — assistant text returned directly
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the weather today?"}' \
+  | python3 -m json.tool
 ```
+
+Inspect `debug.reasoning.trace` to see the Reasoner output, and `debug.reasoning.api_keys` to confirm the right Glass-Box keys were used.
 
 ### Financial Engine Test Payloads
 
-The `financial_engine` tool supports the following functions. All use `user_id: 1912650190` as a known test user with portfolio data.
+The `financial_engine` tool dispatches to 10 functions. All use `user_id: 1912650190` as the reference test user.
 
 ```json
 {"function": "diversification", "parameters": {"user_id": 1912650190}}
@@ -243,14 +269,14 @@ The `financial_engine` tool supports the following functions. All use `user_id: 
 {"function": "factor_preference", "parameters": {"user_id": 1912650190}}
 ```
 
-Direct API call:
+Direct backend call:
 ```bash
 curl -X POST http://localhost:8089/financial_engine \
   -H "Content-Type: application/json" \
   -d '{"function": "sector_breakdown", "parameters": {"user_id": "1912650190"}}'
 ```
 
-Through the agent:
+Through the agent (the answer comes from the Glass-Box Answerer):
 ```bash
 curl -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
@@ -259,12 +285,18 @@ curl -X POST http://localhost:8090/ask \
 
 ## Future Work
 
-All future work should be evaluated against the [project goal](README.md#project-goal): enabling the agent to explain the logic behind API results.
+The integration plan in `../sec_agent_reasoning_llm_integration_plan.md` defines four phases. Phases 1-3 are done. Remaining work:
 
-### Core goal: Explainability
-1. **Calculation context** — Give the agent access to how each API computes its results (e.g., "sector_breakdown weights each holding's sectorExposure by its currentValue proportion") so it can answer "how was this calculated?"
-2. **Assumption transparency** — Surface the assumptions each function makes (e.g., "holdings with missing sectorExposure are skipped", "benchmark is Nifty 500")
+### Phase 4 — API description update pipeline (handed off)
 
-### Supporting features
-3. **Conversation memory** — Support multi-turn conversations so users can ask follow-up questions about previous results
-4. **Streaming responses** — Stream the render LLM output for better UX on long answers
+- Extraction script in `Reasoning_LLM_TiFin/scripts/update_api_descriptions.py` that walks `securities-recommendation` source and regenerates `all_api_descriptions.json`.
+- JSON validation tests asserting every active tool has a description and every entry has the required fields.
+- GitHub Actions workflow that runs the script + validation and fails (or opens a PR) when committed JSON differs from generated.
+- Human-review docs for the regeneration process (per plan §423: no LLM-driven rewrite of descriptions).
+
+### Production hardening (post-Phase 4)
+
+- Move `session_store` from in-memory dict to Redis / Postgres / app session service.
+- Stream the Answerer output for better UX on long answers.
+- Per-request Glass-Box model instances (or locking) to remove the verifier-metadata race when concurrent same-session requests arrive.
+- Re-enable reserved tools (SRC, ML, etc.) by adding their Glass-Box descriptions and adapter mappings.
