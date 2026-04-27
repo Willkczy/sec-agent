@@ -149,6 +149,10 @@ If no tool was called AND the session has no prior cache, the assistant's text r
 - All settings via `.env` (loaded by pydantic-settings).
 - `extra=ignore` in `Settings.model_config` so the same `.env` can hold Glass-Box vars (`MODEL_PROVIDER`, `GPU_BASE_URL`, etc.) without breaking sec-agent startup.
 - `ENABLE_AUTH=false` for local dev, `true` for deployed services.
+- `LOCAL_MODE=true` strips `/cr/<service>` prefixes and can route local services by prefix:
+  - `FIN_ENGINE_BASE_URL=http://localhost:8080`
+  - `MODEL_PORTFOLIO_BASE_URL=http://localhost:8081`
+  - `API_BASE_URL` remains the deployed gateway/local proxy/fallback base URL.
 - `REASONING_ARCHITECTURE=two_layer|three_layer` selects the Glass-Box pipeline.
 - Self-hosted GPU is the recommended LLM (Groq context window is too small for the historical 20-tool schema; with 10 active tools it could fit, but not validated).
 
@@ -159,14 +163,14 @@ If no tool was called AND the session has no prior cache, the assistant's text r
 
 ## Upstream API Services
 
-The agent calls these services (must be running):
+The agent calls these services (must be running locally or reachable through a deployed gateway):
 
-| Service | Local URL | Deployed URL |
+| Service | Direct local URL with `LOCAL_MODE=true` | Deployed URL |
 |---|---|---|
-| Financial Engine | `http://localhost:8089/cr/fin-engine/` | `https://api.askmyfi.com/cr/fin-engine/` |
-| Model Portfolio | `http://localhost:8089/cr/model-portfolio/` | `https://api.askmyfi.com/cr/model-portfolio/` |
-| SRC | `http://localhost:8089/cr/src/` | `https://api.askmyfi.com/cr/src/` (reserved) |
-| ML Recommendations | `http://localhost:8089/cr/mlr/` | `https://api.askmyfi.com/cr/mlr/` (reserved) |
+| Financial Engine | `FIN_ENGINE_BASE_URL=http://localhost:8080` | `https://api.askmyfi.com/cr/fin-engine/` |
+| Model Portfolio | `MODEL_PORTFOLIO_BASE_URL=http://localhost:8081` | `https://api.askmyfi.com/cr/model-portfolio/` |
+| SRC | fallback `API_BASE_URL` only today | `https://api.askmyfi.com/cr/src/` (reserved) |
+| ML Recommendations | fallback `API_BASE_URL` only today | `https://api.askmyfi.com/cr/mlr/` (reserved) |
 
 SRC and ML are listed because their tool entries still exist in `TOOLS`, but `ACTIVE_TOOLS` does not expose them to the LLM today (no Glass-Box descriptions).
 
@@ -197,5 +201,6 @@ Without this, running backend services locally produces 500s.
 - Do not import code from `securities-recommendation` — communicate only via HTTP through `APIClient`.
 - Do not hardcode API responses or mock data in production code.
 - Do not replace `state.history` with a new list inside the SessionStore (the Reasoner already holds a reference); mutate with `state.history[:] = ...`.
-- Do not assume `session_id` is supplied — the agent must run statelessly when it's omitted.
+- Do not assume `session_id` is supplied — the agent must run statelessly when it's omitted. In stateless calls, user-specific queries need `user_id` in request context because there is no stored context to reuse.
+- Do not require users to write IDs in natural-language queries. User identity belongs in request/session/auth context and is backfilled into tool params by `main.py`.
 - Do not add organization-specific routing (this agent is org-agnostic by design).
