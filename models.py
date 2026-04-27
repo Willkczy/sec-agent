@@ -5,6 +5,8 @@ from typing import Optional, Any
 class AskRequest(BaseModel):
     query: str
     max_iters: Optional[int] = 3
+    user_id: Optional[str] = None
+    external_user_id: Optional[str] = None
     org_id: Optional[str] = None
     session_id: Optional[str] = None
 

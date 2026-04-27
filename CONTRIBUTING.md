@@ -102,6 +102,7 @@ Imperative mood, first line under 72 chars:
 
 ```
 Add session_id field to AskRequest
+Add request user context to AskRequest
 Fix verifier feedback not propagated on retry
 Update reasoning adapter mapping for goal_defaults
 ```
@@ -136,11 +137,11 @@ Update reasoning adapter mapping for goal_defaults
 | `tools.py` | `TOOLS` registry, `ACTIVE_TOOLS` allowlist, OpenAI schema conversion | HTTP calls, LLM calls, api_key resolution |
 | `api_client.py` | HTTP requests to backend microservices | Tool selection, response formatting |
 | `prompts.py` | System prompt for the **tool-calling LLM only** (not the Reasoner/Answerer) | Reasoner/Answerer prompts (those live in `Reasoning_LLM_TiFin`) |
-| `main.py` | Tool-call loop, session loading, hand-off to reasoner, FastAPI app | Tool schemas, prompt text, mapping logic |
+| `main.py` | Tool-call loop, session loading, user-context injection/backfill, hand-off to reasoner, FastAPI app | Tool schemas, prompt text, mapping logic |
 | `config.py` | Settings + env loading (includes `REASONING_ARCHITECTURE`) | Business logic |
-| `models.py` | `AskRequest` / `AskResponse` Pydantic models | Validation logic beyond types |
+| `models.py` | `AskRequest` / `AskResponse` Pydantic models, including optional user context fields | Validation logic beyond types |
 | `reasoning_adapter.py` | sec-agent ↔ Glass-Box bridge: tool→api_key mapping, output unwrap, model singleton, `build_inputs` + `answer` | Glass-Box prompts or model internals |
-| `session_store.py` | Per-`session_id` history + cache + trimming | Reasoning, tool calls, persistence |
+| `session_store.py` | Per-`session_id` history + cache + trusted user context + trimming | Reasoning, tool calls, persistence |
 
 ### Adding a New Tool
 
@@ -254,10 +255,10 @@ The SRC and ML tool-selection suites stay in the repo as a reference for the day
 # First turn — fires a tool
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show sector breakdown for user 1912650190", "session_id": "smoke-1"}' \
+  -d '{"query": "Show my sector breakdown", "user_id": "1912650190", "session_id": "smoke-1"}' \
   | python3 -m json.tool
 
-# Follow-up — should NOT re-fire the tool; cache is reused
+# Follow-up — should NOT re-fire the tool; cache and stored user context are reused
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"query": "How was that calculated?", "session_id": "smoke-1"}' \
@@ -271,6 +272,8 @@ curl -s -X POST http://localhost:8090/ask \
 ```
 
 Inspect `debug.reasoning.trace` to see the Reasoner output, and `debug.reasoning.api_keys` to confirm the right Glass-Box keys were used.
+
+For user-specific agent tests, put the ID in request context (`"user_id": "1912650190"`) instead of the natural-language query. The first turn stores it on `SessionState`; later turns on the same `session_id` can ask natural follow-ups such as `"Now show my market-cap split"` without repeating the ID. Direct backend calls still require `user_id` inside the backend payload.
 
 ### Financial Engine Test Payloads
 
@@ -300,7 +303,7 @@ Through the agent (the answer comes from the Glass-Box Answerer):
 ```bash
 curl -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is the exposure to HDFC Bank for user 1912650190?"}'
+  -d '{"query": "What is my exposure to HDFC Bank?", "user_id": "1912650190"}'
 ```
 
 ## Future Work

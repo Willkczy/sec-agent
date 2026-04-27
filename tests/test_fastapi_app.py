@@ -46,10 +46,23 @@ class TestAskEndpoint:
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url="http://test"
                 ) as client:
-                    return await client.post(
+                    resp = await client.post(
                         "/ask",
-                        json={"query": "Show me large cap funds"},
+                        json={
+                            "query": "Show me large cap funds",
+                            "user_id": "1912650190",
+                            "org_id": "42",
+                        },
                     )
+                instance.run.assert_awaited_once_with(
+                    "Show me large cap funds",
+                    3,
+                    session_id=None,
+                    user_id="1912650190",
+                    external_user_id=None,
+                    org_id="42",
+                )
+                return resp
 
         resp = anyio.run(_run)
         assert resp.status_code == 200

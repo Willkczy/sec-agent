@@ -2,7 +2,7 @@
 
 Queries for testing tool selection and API calls. Verified user IDs with portfolio data include `1912650190`, `1018083528`, `1733307354`, `1515040473`, `1176384033`, `1724788267`. User `1133023930` has no holdings.
 
-Use verified users for live backend smoke tests. Synthetic IDs such as `100`, `200`, or `12345` are routing-only examples unless the target backend environment has matching data.
+Use verified users for live backend smoke tests. For realistic agent testing, pass the ID as request context (`"user_id": "1912650190"`) and keep the query natural, e.g. `"Show my sector breakdown"`. Synthetic IDs such as `100`, `200`, or `12345` are routing-only examples unless the target backend environment has matching data.
 
 > **Active vs reserved tools.** Only the 10 Financial Engine + Model Portfolio tools listed in `tools.py::ACTIVE_TOOLS` are exposed to the LLM today. Sections below labeled **Reserved (currently disabled)** still have entries in the `TOOLS` registry but are filtered out of the OpenAI schema — they are kept here for the day they are re-enabled (per the steps in `CONTRIBUTING.md#adding-a-new-tool`). Queries against reserved tools will currently produce an out-of-scope reply from the agent.
 
@@ -11,12 +11,12 @@ Use verified users for live backend smoke tests. Synthetic IDs such as `100`, `2
 ```bash
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "<QUERY>"}' | python3 -m json.tool
+  -d '{"query": "<QUERY>", "user_id": "1912650190"}' | python3 -m json.tool
 
-# With a session_id to enable follow-up continuity
+# With a session_id to enable follow-up continuity and stored user context
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "<QUERY>", "session_id": "smoke-1"}' | python3 -m json.tool
+  -d '{"query": "<QUERY>", "user_id": "1912650190", "session_id": "smoke-1"}' | python3 -m json.tool
 ```
 
 ---
@@ -27,11 +27,11 @@ All queries go through the `financial_engine` tool with different `function` sub
 
 | Query | Expected function |
 |---|---|
-| Show sector breakdown for user 1912650190 | `sector_breakdown` |
-| Check diversification of portfolio for user 1912650190 | `diversification` |
-| What is the asset breakdown for user 1912650190? | `asset_breakdown` |
-| Show market cap distribution for user 1912650190 | `market_cap_breakdown` |
-| What is my exposure to Reliance in user 1912650190's portfolio? | `single_holding_exposure` |
+| Show my sector breakdown | `sector_breakdown` |
+| Check diversification of my portfolio | `diversification` |
+| What is my asset breakdown? | `asset_breakdown` |
+| Show my market cap distribution | `market_cap_breakdown` |
+| What is my exposure to Reliance? | `single_holding_exposure` |
 
 ---
 
@@ -42,27 +42,26 @@ The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 ### get_portfolio_options
 | Query | Expected Tool |
 |---|---|
-| Build me a portfolio with 50000 SIP investment, medium risk, user ID 100 | `get_portfolio_options` (routing-only unless user exists) |
-| I want to invest 5 lakhs as a lump sum with high risk. User ID 200. | `get_portfolio_options` (routing-only unless user exists) |
-| Build a medium risk portfolio for user 1018083528 with 20000 monthly SIP | `get_portfolio_options` |
+| Build me a portfolio with 50000 SIP investment, medium risk | `get_portfolio_options` |
+| I want to invest 5 lakhs as a lump sum with high risk | `get_portfolio_options` |
+| Build a medium risk portfolio with 20000 monthly SIP | `get_portfolio_options` |
 
 **Critical routing test:** the last query previously caused the agent to auto-chain into `backtest_portfolio`. After the description enrichment, it should call `get_portfolio_options` ONCE and stop.
 
 ### get_risk_profile
 | Query | Expected Tool |
 |---|---|
-| What is the risk profile for user 12345? | `get_risk_profile` (routing-only unless user exists) |
-| What is the risk profile for user 1018083528? | `get_risk_profile` |
+| What is my risk profile? | `get_risk_profile` |
 
 ### portfolio_builder
 | Query | Expected Tool |
 |---|---|
-| Build a custom portfolio for user 1018083528 with a 50000 lump sum after I select my own funds | `portfolio_builder` |
+| Build a custom portfolio with a 50000 lump sum after I select my own funds | `portfolio_builder` |
 
 ### backtest_portfolio
 | Query | Expected Tool |
 |---|---|
-| I swapped funds in the recommended portfolio for user 1018083528. Re-run the backtest for a 50000 lump sum using my selected funds. | `backtest_portfolio` |
+| I swapped funds in my recommended portfolio. Re-run the backtest for a 50000 lump sum using my selected funds. | `backtest_portfolio` |
 
 `backtest_portfolio` requires a concrete `selected_funds` payload from a prior portfolio-options response. It should not be auto-called immediately after `get_portfolio_options`, because that response already includes backtest metrics.
 
@@ -90,7 +89,7 @@ The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 ### stock_to_fund
 | Query | Expected Tool |
 |---|---|
-| Convert stock holdings of user 12345 to mutual fund recommendations | `stock_to_fund` (routing-only unless user exists) |
+| Convert my stock holdings to mutual fund recommendations | `stock_to_fund` |
 
 ---
 
@@ -121,7 +120,7 @@ The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 ### portfolio_swap_recommendations
 | Query | Expected Tool |
 |---|---|
-| Analyze the full portfolio of user 1912650190 in org 2854263694 and suggest swaps | `portfolio_swap_recommendations` |
+| Analyze my full portfolio and suggest swaps | `portfolio_swap_recommendations` |
 
 ### stock_research_data
 | Query | Expected Tool |
@@ -161,9 +160,9 @@ The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 ### ml_fund_discovery
 | Query | Expected Tool |
 |---|---|
-| Show ML-based personalized fund recommendations for user 1912650190 | `ml_fund_discovery` |
-| What funds would similar investors recommend for user 100? | `ml_fund_discovery` |
-| Give me collaborative filtering fund suggestions for user 1912650190 | `ml_fund_discovery` |
+| Show my ML-based personalized fund recommendations | `ml_fund_discovery` |
+| What funds would similar investors recommend for me? | `ml_fund_discovery` |
+| Give me collaborative filtering fund suggestions | `ml_fund_discovery` |
 
 ---
 
@@ -173,9 +172,9 @@ These may correctly trigger multiple tools or have multiple valid tool selection
 
 | Query | Acceptable Tools |
 |---|---|
-| Determine my risk profile and build a portfolio. User 12345, 50000 SIP. | `get_portfolio_options`, `get_risk_profile`, or both |
-| Show diversification for user 1912650190 and break it down by sector | `financial_engine` (called twice with different `function` values) |
-| What's the asset breakdown for user 1912650190, and is the portfolio concentrated? | `financial_engine` (`asset_breakdown` + `diversification`) |
+| Determine my risk profile and build a portfolio with 50000 SIP. | `get_portfolio_options`, `get_risk_profile`, or both |
+| Show my diversification and break it down by sector | `financial_engine` (called twice with different `function` values) |
+| What's my asset breakdown, and is the portfolio concentrated? | `financial_engine` (`asset_breakdown` + `diversification`) |
 
 ---
 
@@ -185,9 +184,9 @@ These verify the description enrichment prevents common mis-routing.
 
 | Query | Should Call | Should NOT Call |
 |---|---|---|
-| Build a medium risk portfolio for user 1018083528 with 20000 monthly SIP | `get_portfolio_options` | `backtest_portfolio` (response already has backtest) |
-| What is user 1018083528's risk profile? | `get_risk_profile` | `risk_profile_v2` (that's for onboarding) |
-| Build a portfolio with 50000 SIP, user 200 | `get_portfolio_options` | `get_risk_profile` (auto-fetched internally) |
+| Build a medium risk portfolio with 20000 monthly SIP | `get_portfolio_options` | `backtest_portfolio` (response already has backtest) |
+| What is my risk profile? | `get_risk_profile` | `risk_profile_v2` (that's for onboarding) |
+| Build a portfolio with 50000 SIP | `get_portfolio_options` | `get_risk_profile` (auto-fetched internally) |
 | I have one goal: save 1 crore in 20 years | `single_goal_optimizer` | `multi_goal_optimizer` (single goal) |
 
 ---
@@ -200,15 +199,30 @@ Verifies `session_id` follow-ups reuse the prior cache without re-firing tools. 
 # Turn 1 — fires financial_engine
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show asset breakdown for user 1912650190", "session_id": "smoke-followup"}' \
+  -d '{"query": "Show my asset breakdown", "user_id": "1912650190", "session_id": "smoke-followup"}' \
   | python3 -m json.tool
 
-# Turn 2 — same session, no new tool call expected
+# Turn 2 — same session, no new tool call expected, user_id can be omitted
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"query": "How was that calculated?", "session_id": "smoke-followup"}' \
   | python3 -m json.tool
 ```
+
+---
+
+## Missing user context smoke
+
+Verifies user-specific queries fail cleanly when neither the request nor session supplies `user_id`.
+
+```bash
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Show my asset breakdown"}' \
+  | python3 -m json.tool
+```
+
+Expected answer: `I need a signed-in user context to answer portfolio-specific questions.`
 
 ---
 
@@ -233,17 +247,17 @@ Expected: `debug.reasoning` is absent; the answer is the tool-LLM's plain text r
 # Risk profile lookup (active)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is the risk profile for user 1018083528?"}'
+  -d '{"query": "What is my risk profile?", "user_id": "1018083528"}'
 
 # Build portfolio (the critical auto-chain test)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Build a medium risk portfolio for user 1018083528 with 20000 monthly SIP"}'
+  -d '{"query": "Build a medium risk portfolio with 20000 monthly SIP", "user_id": "1018083528"}'
 
 # Financial engine — sector breakdown (active)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show sector breakdown for user 1912650190"}'
+  -d '{"query": "Show my sector breakdown", "user_id": "1912650190"}'
 
 # Goal planning (active)
 curl -s -X POST http://localhost:8090/ask \

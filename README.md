@@ -16,16 +16,17 @@ The tool-calling LLM never writes the final answer. The Glass-Box Reasoner produ
 ## Architecture
 
 ```
-                     User Query (+ optional session_id)
+             User Query (+ optional user context + session_id)
                               │
                               ▼
          ┌────────────────────────────────────────────────────┐
          │ Agent.run() — main.py                              │
-         │  1. Load SessionState (history + cache) by id      │
-         │  2. Prepend prior turns to tool-LLM messages       │
+         │  1. Load SessionState (history/cache/context)      │
+         │  2. Add hidden trusted user context when present   │
          │  3. Tool-calling LLM picks FE/MP tool(s)           │
-         │  4. APIClient executes HTTP POST per call          │
-         │  5. Loop until LLM emits text or max_iters         │
+         │  4. Backfill IDs into tool params from context     │
+         │  5. APIClient executes HTTP POST per call          │
+         │  6. Loop until LLM emits text or max_iters         │
          └────────────────────────────────────────────────────┘
                               │
                               │ tool_results
@@ -112,14 +113,17 @@ Three-layer adds 1 LLM call per attempt and up to 2 full retries on FAIL — slo
 - `history` — Answerer-facing user/assistant pairs
 - `history_traces` — Reasoner-facing user/trace pairs
 - `last_api_keys`, `last_user_outputs` — cache of the most recent reasoning inputs
+- `user_id`, `external_user_id`, `org_id` — trusted caller/session context used to answer natural "my portfolio" queries
 
 When a follow-up turn arrives on the same `session_id`:
 
 - Prior `history` is prepended to the tool-LLM messages so it understands references like "how was that calculated?".
+- Stored user context is injected as a hidden system message, so users do not need to include IDs in natural language.
+- Missing `user_id`/`org_id` fields are backfilled into tool parameters before the backend call. Correctness does not rely only on the LLM copying IDs.
 - If the tool-LLM decides not to call any tool, the adapter still runs against the cached `api_keys`/`user_outputs` so the Reasoner can answer from the prior evidence and prior trace.
 - If the tool-LLM does fire a fresh call, the new inputs are merged with the cache so the Reasoner sees both old and new evidence.
 
-History is trimmed to `max_turns × 2` messages (default 10 turns). No `session_id` → ephemeral, no continuity. This is a Phase 2 prototype store; production should swap it for Redis / Postgres / app-session-service.
+History is trimmed to `max_turns × 2` messages (default 10 turns). No `session_id` → ephemeral, no continuity and no stored user context. This is a Phase 2 prototype store; production should swap it for Redis / Postgres / app-session-service.
 
 ## Integration Progress
 
@@ -127,12 +131,12 @@ Tracking the [integration plan](../sec_agent_reasoning_llm_integration_plan.md):
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 — Adapter prototype | Tool prune to FE/MP, `reasoning_adapter.py`, wire `main.py`, `session_id` field | **Done** |
+| 1 — Adapter prototype | Tool prune to FE/MP, `reasoning_adapter.py`, wire `main.py`, `session_id` + user context fields | **Done** |
 | 2 — Session memory | `session_store.py`, history injection, follow-up cache reuse, trimming | **Done** |
 | 3 — Three-layer verification | `REASONING_ARCHITECTURE` toggle, verifier metadata in `debug.reasoning` | **Done** |
 | 4 — Description update pipeline | `update_api_descriptions.py`, JSON validation, GitHub Actions | **Pending** (handed off) |
 
-Unit test coverage: 87 tests across `test_reasoning_adapter`, `test_session_store`, `test_agent_unit`, `test_agent_session`, `test_tools_registry`, `test_api_client`, `test_fastapi_app`.
+Unit test coverage: 92 tests across `test_reasoning_adapter`, `test_session_store`, `test_agent_unit`, `test_agent_session`, `test_tools_registry`, `test_api_client`, `test_fastapi_app`.
 
 Live smoke verification has been run for Financial Engine round-trips through the full flow: user query → tool selection → backend result → Glass-Box reasoning → answer. Model Portfolio still needs local/deployed smoke coverage per endpoint.
 
@@ -143,10 +147,10 @@ sec-agent/
 ├── main.py                # FastAPI app + Agent orchestrator (tool loop + reasoner handoff)
 ├── tools.py               # TOOLS registry (20 entries) + ACTIVE_TOOLS allowlist + get_openai_tools()
 ├── prompts.py             # SYSTEM_PROMPT for the tool-calling LLM (FE/MP scope only)
-├── models.py              # AskRequest / AskResponse Pydantic models (with session_id)
+├── models.py              # AskRequest / AskResponse Pydantic models (with session_id + user context)
 ├── api_client.py          # Async HTTP client for backend microservice calls
 ├── reasoning_adapter.py   # Bridge to Reasoning_LLM_TiFin Glass-Box models
-├── session_store.py       # In-memory per-session history + cache (Phase 2 prototype)
+├── session_store.py       # In-memory per-session history + cache + user context
 ├── config.py              # Settings (env-based, includes REASONING_ARCHITECTURE)
 ├── tests/
 │   ├── conftest.py
@@ -233,14 +237,15 @@ With `LOCAL_MODE=true`, `/cr/fin-engine/financial_engine` resolves to `http://lo
 ### Test
 
 ```bash
-# Asset breakdown — routes through financial_engine -> Reasoner -> Answerer
+# Asset breakdown — routes through financial_engine -> Reasoner -> Answerer.
+# user_id is request/session context, not natural-language query text.
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show asset breakdown for user 1912650190", "session_id": "demo-1"}' \
+  -d '{"query": "Show my asset breakdown", "user_id": "1912650190", "session_id": "demo-1"}' \
   | python3 -m json.tool
 
 # Follow-up on the same session — should NOT re-fire the tool;
-# the cached outputs and prior trace are reused by the Reasoner.
+# the cached outputs, prior trace, and stored user context are reused.
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"query": "How was that calculated?", "session_id": "demo-1"}' \
@@ -336,13 +341,18 @@ The `financial_engine` tool dispatches via the `function` param. All 10 function
 **Request:**
 ```json
 {
-  "query": "Show asset breakdown for user 1912650190",
+  "query": "Show my asset breakdown",
+  "user_id": "1912650190",
+  "external_user_id": null,
+  "org_id": null,
   "max_iters": 3,
   "session_id": "demo-1"
 }
 ```
 
-`session_id` is optional. With it, follow-up turns reuse prior history and the Reasoner cache. Without it, each call is stateless.
+`user_id`, `external_user_id`, and `org_id` are optional request context fields. For user-specific portfolio tools, provide `user_id` on the first turn, or rely on the same `session_id` after it has already been stored. In production, these should come from auth/session middleware rather than the user typing them into the query.
+
+`session_id` is optional. With it, follow-up turns reuse prior history, stored user context, and the Reasoner cache. Without it, each call is stateless.
 
 **Response:**
 ```json

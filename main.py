@@ -7,7 +7,11 @@ and produces a natural language answer.
 """
 
 import json
+import logging
+import time
+from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from openai import AsyncOpenAI
@@ -20,8 +24,22 @@ from prompts import SYSTEM_PROMPT
 from api_client import APIClient
 from reasoning_adapter import ReasoningAdapter
 from session_store import SessionStore, SessionState
+from logging_config import (
+    log_footer,
+    log_header,
+    request_id_var,
+    session_id_var,
+    setup_logging,
+)
 
 load_dotenv()
+
+setup_logging(
+    level=settings.LOG_LEVEL,
+    fmt=settings.LOG_FORMAT,
+    use_unicode=settings.LOG_USE_UNICODE,
+)
+logger = logging.getLogger("sec_agent")
 
 # ---------------------------------------------------------------------------
 # Clients (initialized once at module level)
@@ -57,6 +75,20 @@ OPENAI_TOOLS = get_openai_tools()
 # as quoted strings; pydantic strict-mode rejects, fin-engine returns 500.
 # Coerce here so tool-calling is deterministic regardless of LLM variance.
 _INT_FIELDS = {"org_id", "max_stocks", "top_n"}
+MISSING_USER_CONTEXT_ANSWER = (
+    "I need a signed-in user context to answer portfolio-specific questions."
+)
+
+
+@dataclass(frozen=True)
+class UserContext:
+    """Trusted caller/session context, separate from the natural-language query."""
+    user_id: str | None = None
+    external_user_id: str | None = None
+    org_id: str | None = None
+
+    def has_any(self) -> bool:
+        return any((self.user_id, self.external_user_id, self.org_id))
 
 
 def _coerce_int_fields(obj: Any) -> Any:
@@ -69,6 +101,133 @@ def _coerce_int_fields(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_coerce_int_fields(x) for x in obj]
     return obj
+
+
+def _clean_context_value(value: str | int | None) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def _resolve_user_context(
+    session: SessionState,
+    *,
+    user_id: str | int | None = None,
+    external_user_id: str | int | None = None,
+    org_id: str | int | None = None,
+) -> UserContext:
+    """Merge request context into session context and return the active values."""
+    resolved_user_id = _clean_context_value(user_id) or session.user_id
+    resolved_external_user_id = (
+        _clean_context_value(external_user_id) or session.external_user_id
+    )
+    resolved_org_id = _clean_context_value(org_id) or session.org_id
+
+    session.user_id = resolved_user_id
+    session.external_user_id = resolved_external_user_id
+    session.org_id = resolved_org_id
+
+    return UserContext(
+        user_id=resolved_user_id,
+        external_user_id=resolved_external_user_id,
+        org_id=resolved_org_id,
+    )
+
+
+def _build_user_context_message(context: UserContext) -> dict[str, str] | None:
+    if not context.has_any():
+        return None
+
+    lines = [
+        "Authenticated user context is trusted request/session metadata.",
+        "Use these values for tool parameters when the user says 'my' or omits identifiers.",
+    ]
+    if context.user_id:
+        lines.append(f"user_id: {context.user_id}")
+    if context.external_user_id:
+        lines.append(f"external_user_id: {context.external_user_id}")
+    if context.org_id:
+        lines.append(f"org_id: {context.org_id}")
+
+    return {"role": "system", "content": "\n".join(lines)}
+
+
+def _context_user_id_for_tool(tool_name: str, context: UserContext) -> str | int | None:
+    if not context.user_id:
+        return None
+    tool_def = TOOLS.get(tool_name, {})
+    param_def = tool_def.get("parameters", {}).get("user_id", {})
+    if param_def.get("type") == "integer" and context.user_id.isdigit():
+        return int(context.user_id)
+    return context.user_id
+
+
+def _inject_user_context(
+    tool_name: str,
+    params: dict[str, Any],
+    context: UserContext,
+) -> dict[str, Any]:
+    """Fill omitted user/org identifiers from trusted context before API calls."""
+    params = dict(params or {})
+    tool_def = TOOLS.get(tool_name, {})
+    tool_params = tool_def.get("parameters", {})
+
+    if tool_name == "financial_engine":
+        inner = params.get("parameters")
+        if not isinstance(inner, dict):
+            inner = {}
+        else:
+            inner = dict(inner)
+
+        if context.user_id and not inner.get("user_id"):
+            inner["user_id"] = context.user_id
+        if context.external_user_id and not inner.get("external_user_id"):
+            inner["external_user_id"] = context.external_user_id
+        if context.org_id and not inner.get("org_id"):
+            inner["org_id"] = context.org_id
+        params["parameters"] = inner
+        return params
+
+    if "user_id" in tool_params and context.user_id and not params.get("user_id"):
+        params["user_id"] = _context_user_id_for_tool(tool_name, context)
+    if (
+        "external_user_id" in tool_params
+        and context.external_user_id
+        and not params.get("external_user_id")
+    ):
+        params["external_user_id"] = context.external_user_id
+    if "org_id" in tool_params and context.org_id and not params.get("org_id"):
+        params["org_id"] = context.org_id
+    return params
+
+
+def _missing_user_context_error(tool_name: str, params: dict[str, Any]) -> str | None:
+    """Return a user-facing error when a user-specific tool has no user ID."""
+    tool_def = TOOLS.get(tool_name, {})
+    tool_params = tool_def.get("parameters", {})
+
+    if tool_name == "financial_engine":
+        inner = params.get("parameters")
+        if not isinstance(inner, dict) or not inner.get("user_id"):
+            return "Missing user_id for this portfolio-specific query."
+        return None
+
+    user_schema = tool_params.get("user_id")
+    if user_schema and user_schema.get("required") and not params.get("user_id"):
+        return "Missing user_id for this user-specific query."
+    return None
+
+
+def _has_missing_user_context_error(tool_results: list[dict[str, Any]]) -> bool:
+    for record in tool_results:
+        result = record.get("result")
+        if not isinstance(result, dict):
+            continue
+        error = result.get("error")
+        if isinstance(error, str) and error.startswith("Missing user_id"):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -99,13 +258,24 @@ class Agent:
 
     # -- Execute a single tool call -----------------------------------------
 
-    async def _call_tool(self, tool_name: str, params: dict) -> dict[str, Any]:
+    async def _call_tool(
+        self,
+        tool_name: str,
+        params: dict,
+        context: UserContext,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Look up the tool in the registry and make the HTTP call."""
         tool_def = TOOLS.get(tool_name)
         if tool_def is None:
-            return {"error": f"Unknown tool: {tool_name}"}
+            return params, {"error": f"Unknown tool: {tool_name}"}
+
+        params = _inject_user_context(tool_name, params, context)
+        missing_error = _missing_user_context_error(tool_name, params)
+        if missing_error:
+            return params, {"error": missing_error}
+
         params = _coerce_int_fields(params)
-        return await self.api.call_tool(tool_def["endpoint"], params)
+        return params, await self.api.call_tool(tool_def["endpoint"], params)
 
     # -- Main orchestration loop --------------------------------------------
 
@@ -124,6 +294,9 @@ class Agent:
         user_query: str,
         max_iters: int = 3,
         session_id: str | None = None,
+        user_id: str | int | None = None,
+        external_user_id: str | int | None = None,
+        org_id: str | int | None = None,
     ) -> dict[str, Any]:
         """
         Full orchestration loop using native function calling.
@@ -145,10 +318,19 @@ class Agent:
         Returns {"answer": str, "debug": {...}}.
         """
         session = self._load_session(session_id)
+        user_context = _resolve_user_context(
+            session,
+            user_id=user_id,
+            external_user_id=external_user_id,
+            org_id=org_id,
+        )
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
+        context_message = _build_user_context_message(user_context)
+        if context_message:
+            messages.append(context_message)
         # Inject prior user-facing turns so the tool-calling LLM
         # understands references like "how was that calculated?" and can
         # decide to skip a redundant tool call.
@@ -205,7 +387,11 @@ class Agent:
                 except json.JSONDecodeError:
                     params = {}
 
-                result = await self._call_tool(tool_name, params)
+                params, result = await self._call_tool(
+                    tool_name,
+                    params,
+                    user_context,
+                )
 
                 tool_record = {
                     "tool": tool_name,
@@ -241,6 +427,12 @@ class Agent:
         new_keys, new_outputs, unmapped = ReasoningAdapter.build_inputs(
             debug["tool_results"]
         )
+
+        if _has_missing_user_context_error(debug["tool_results"]):
+            return {
+                "answer": MISSING_USER_CONTEXT_ANSWER,
+                "debug": debug,
+            }
 
         if not debug["tool_results"] and not session.last_api_keys:
             # No new tool call AND no prior session cache — nothing to
@@ -310,6 +502,12 @@ async def health():
 @app.post("/ask", response_model=AskResponse)
 async def ask(request: AskRequest):
     """Main endpoint: takes a natural language query, returns an answer."""
+    request_id_var.set(uuid4().hex[:8])
+    session_id_var.set(request.session_id or "-")
+
+    log_header(logger)
+    started = time.perf_counter()
+
     try:
         agent = Agent(
             llm=llm_client,
@@ -321,6 +519,16 @@ async def ask(request: AskRequest):
             request.query,
             request.max_iters,
             session_id=request.session_id,
+            user_id=request.user_id,
+            external_user_id=request.external_user_id,
+            org_id=request.org_id,
+        )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        log_footer(
+            logger,
+            label="DONE",
+            total=f"{elapsed_ms}ms",
+            answer=f"{len(result['answer'])} chars",
         )
         return AskResponse(
             answer=result["answer"],
@@ -328,4 +536,12 @@ async def ask(request: AskRequest):
             debug=result["debug"],
         )
     except Exception as e:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        log_footer(
+            logger,
+            label="ERROR",
+            total=f"{elapsed_ms}ms",
+            error=type(e).__name__,
+        )
+        logger.exception("request failed")
         raise HTTPException(status_code=500, detail=str(e))

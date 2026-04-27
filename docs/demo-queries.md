@@ -16,18 +16,18 @@ The user-facing answer in every response is produced by the Glass-Box Answerer (
 ```bash
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "<QUERY>"}' | python3 -m json.tool
+  -d '{"query": "<QUERY>", "user_id": "1912650190"}' | python3 -m json.tool
 
 # With a session_id to chain follow-ups (the second turn typically reuses the
-# cached api_keys/user_outputs and does NOT re-fire the tool)
+# cached api_keys/user_outputs, stored user context, and does NOT re-fire the tool)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "<QUERY>", "session_id": "demo-1"}' | python3 -m json.tool
+  -d '{"query": "<QUERY>", "user_id": "1912650190", "session_id": "demo-1"}' | python3 -m json.tool
 ```
 
 ## Reference user
 
-All user-specific queries target **user `1912650190`** — the user Glass-Box built its session evidence around. For current local smoke tests, omit `org_id` unless a specific endpoint requires it; passing an unvalidated org can make Financial Engine fetch an empty portfolio for this user.
+All user-specific demo queries use **request context** `user_id: "1912650190"` — the user Glass-Box built its session evidence around. The natural-language query should read like a real user asking about "my" portfolio. For current local smoke tests, omit `org_id` unless a specific endpoint requires it; passing an unvalidated org can make Financial Engine fetch an empty portfolio for this user.
 
 ---
 
@@ -37,16 +37,16 @@ Source: `data-fe.json` sessions 1–10. Every query should route to `financial_e
 
 | # | Query | Expected `function` |
 |---|---|---|
-| FE-S1 | `How is user 1912650190's money split across different asset types?` | `asset_breakdown` |
-| FE-S2 | `How diversified is user 1912650190's portfolio?` | `diversification` |
-| FE-S3 | `What are user 1912650190's top sectors?` | `sector_breakdown` |
-| FE-S4 | `How is user 1912650190's portfolio split between large, mid, and small cap?` | `market_cap_breakdown` |
-| FE-S5 | `What is user 1912650190's total exposure to HDFC Bank Ltd.?` | `single_holding_exposure` (param: `holding_name`) |
-| FE-S6 | `Show me user 1912650190's top 5 individual stock exposures.` | `total_stock_exposure` (param: `top_n=5`) |
-| FE-S7 | `Which AMC is user 1912650190 most concentrated in?` | `amc_preference` |
-| FE-S8 | `Which sectors is user 1912650190 overweight or underweight versus the benchmark?` | `sector_preference` |
-| FE-S9 | `Does user 1912650190 have a thematic investment focus?` | `theme_preference` |
-| FE-S10 | `Does user 1912650190 have any strong factor tilt?` | `factor_preference` |
+| FE-S1 | `How is my money split across different asset types?` | `asset_breakdown` |
+| FE-S2 | `How diversified is my portfolio?` | `diversification` |
+| FE-S3 | `What are my top sectors?` | `sector_breakdown` |
+| FE-S4 | `How is my portfolio split between large, mid, and small cap?` | `market_cap_breakdown` |
+| FE-S5 | `What is my total exposure to HDFC Bank Ltd.?` | `single_holding_exposure` (param: `holding_name`) |
+| FE-S6 | `Show me my top 5 individual stock exposures.` | `total_stock_exposure` (param: `top_n=5`) |
+| FE-S7 | `Which AMC am I most concentrated in?` | `amc_preference` |
+| FE-S8 | `Which sectors am I overweight or underweight versus the benchmark?` | `sector_preference` |
+| FE-S9 | `Do I have a thematic investment focus?` | `theme_preference` |
+| FE-S10 | `Do I have any strong factor tilt?` | `factor_preference` |
 
 ## 2. Financial Engine — multi-function (FE S11–S20)
 
@@ -54,33 +54,33 @@ Source: `data-fe.json` sessions 11–20. Each query should trigger two or more `
 
 | # | Query | Expected functions |
 |---|---|---|
-| FE-S11 | `How much of user 1912650190's total portfolio is in equity mid caps?` | `asset_breakdown` + `market_cap_breakdown` |
-| FE-S12 | `Do user 1912650190's top sector holdings match their overall investing preferences?` | `sector_breakdown` + `sector_preference` |
-| FE-S13 | `Is user 1912650190's HDFC Bank exposure direct or mostly through funds, and which fund contributes most?` | `single_holding_exposure` + `amc_preference` |
-| FE-S14 | `Does user 1912650190's portfolio look concentrated in a few stocks even though it is heavily tilted to one AMC?` | `total_stock_exposure` + `amc_preference` |
-| FE-S15 | `Does user 1912650190's overall portfolio mix suggest they are leaning heavily towards equities?` | `asset_breakdown` + `factor_preference` |
-| FE-S16 | `Is user 1912650190's dominant investment theme aligned with their biggest sector exposures?` | `theme_preference` + `sector_breakdown` |
-| FE-S17 | `Does user 1912650190's sector bias line up with their market-cap profile?` | `sector_preference` + `market_cap_breakdown` |
-| FE-S18 | `Are user 1912650190's top stock exposures enough to explain their strongest sector overweight?` | `total_stock_exposure` + `sector_preference` |
-| FE-S19 | `Is user 1912650190's portfolio more concentrated by theme or by single-stock exposure?` | `theme_preference` + `total_stock_exposure` |
-| FE-S20 | `Would you describe user 1912650190's portfolio as aggressive rather than defensive?` | `asset_breakdown` + `market_cap_breakdown` + `sector_preference` + `factor_preference` |
+| FE-S11 | `How much of my total portfolio is in equity mid caps?` | `asset_breakdown` + `market_cap_breakdown` |
+| FE-S12 | `Do my top sector holdings match my overall investing preferences?` | `sector_breakdown` + `sector_preference` |
+| FE-S13 | `Is my HDFC Bank exposure direct or mostly through funds, and which fund contributes most?` | `single_holding_exposure` + `amc_preference` |
+| FE-S14 | `Does my portfolio look concentrated in a few stocks even though it is heavily tilted to one AMC?` | `total_stock_exposure` + `amc_preference` |
+| FE-S15 | `Does my overall portfolio mix suggest I am leaning heavily towards equities?` | `asset_breakdown` + `factor_preference` |
+| FE-S16 | `Is my dominant investment theme aligned with my biggest sector exposures?` | `theme_preference` + `sector_breakdown` |
+| FE-S17 | `Does my sector bias line up with my market-cap profile?` | `sector_preference` + `market_cap_breakdown` |
+| FE-S18 | `Are my top stock exposures enough to explain my strongest sector overweight?` | `total_stock_exposure` + `sector_preference` |
+| FE-S19 | `Is my portfolio more concentrated by theme or by single-stock exposure?` | `theme_preference` + `total_stock_exposure` |
+| FE-S20 | `Would you describe my portfolio as aggressive rather than defensive?` | `asset_breakdown` + `market_cap_breakdown` + `sector_preference` + `factor_preference` |
 
 ---
 
 ## 3. Model Portfolio — user-specific (MP-U S1–S11)
 
-Source: `data-v0-mp_user_split.json`. All queries reference user `1912650190`.
+Source: `data-v0-mp_user_split.json`. All queries use request context `user_id: "1912650190"`.
 
 | # | Query | Expected tool(s) |
 |---|---|---|
-| MP-U-S1 | `What is user 1912650190's stored overall risk profile?` | `get_risk_profile` |
-| MP-U-S2 | `What portfolio is recommended for user 1912650190 if they invest 50000 as a one-time lump sum?` | `get_portfolio_options` (investment_type=LUMP_SUM) |
-| MP-U-S3 | `What does the custom-assembled portfolio look like for user 1912650190 with a 50000 lump sum, and what were its backtest results?` | `portfolio_builder` |
-| MP-U-S5 | `Are there mutual fund alternatives that could replace user 1912650190's current stock holdings?` | `stock_to_fund` |
-| MP-U-S6 | `Is the recommended portfolio style consistent with user 1912650190's stored risk profile? Investment: 50000 lump sum.` | `get_risk_profile` + `get_portfolio_options` |
-| MP-U-S7 | `Show both the standard portfolio recommendation and the custom-assembled portfolio for user 1912650190 with 50000 lump sum.` | `get_portfolio_options` + `portfolio_builder` |
-| MP-U-S9 | `Is user 1912650190's current stock exposure narrower in scope compared to the mutual funds recommended for a 50000 lump sum investment?` | `get_portfolio_options` + `stock_to_fund` |
-| MP-U-S11 | `What mutual fund portfolio would you recommend for user 1912650190 if they invest 10000 every month through a SIP?` | `get_portfolio_options` (investment_type=SIP) |
+| MP-U-S1 | `What is my stored overall risk profile?` | `get_risk_profile` |
+| MP-U-S2 | `What portfolio is recommended for me if I invest 50000 as a one-time lump sum?` | `get_portfolio_options` (investment_type=LUMP_SUM) |
+| MP-U-S3 | `What does my custom-assembled portfolio look like with a 50000 lump sum, and what were its backtest results?` | `portfolio_builder` |
+| MP-U-S5 | `Are there mutual fund alternatives that could replace my current stock holdings?` | `stock_to_fund` |
+| MP-U-S6 | `Is the recommended portfolio style consistent with my stored risk profile? Investment: 50000 lump sum.` | `get_risk_profile` + `get_portfolio_options` |
+| MP-U-S7 | `Show both the standard portfolio recommendation and the custom-assembled portfolio for me with 50000 lump sum.` | `get_portfolio_options` + `portfolio_builder` |
+| MP-U-S9 | `Is my current stock exposure narrower in scope compared to the mutual funds recommended for a 50000 lump sum investment?` | `get_portfolio_options` + `stock_to_fund` |
+| MP-U-S11 | `What mutual fund portfolio would you recommend for me if I invest 10000 every month through a SIP?` | `get_portfolio_options` (investment_type=SIP) |
 
 **Skipped from this suite:** MP-U-S4, S8, S10 are omitted from this compact demo list. `backtest_portfolio` is active, but backtest examples should use a concrete selected portfolio payload returned by a prior Model Portfolio call.
 
@@ -120,6 +120,7 @@ Every `/ask` response includes:
 
 - `answer` — the user-facing answer **produced by the Glass-Box Answerer** (not by the tool-calling LLM). Grounded in the Reasoner's trace.
 - `session_id` — echoed back from the request (or `null` if none was supplied).
+- request `user_id` / `org_id` / `external_user_id` are not echoed as top-level response fields, but any injected values appear in `debug.iterations[*].tool_calls[*].params` and `debug.tool_results[*].params`.
 - `debug.iterations` — per-iteration tool plan from the tool-calling LLM.
 - `debug.tool_results` — the tools that were called and the raw backend responses (the inputs the Reasoner grounded against).
 - `debug.reasoning` — Glass-Box output:

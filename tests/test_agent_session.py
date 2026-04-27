@@ -259,6 +259,72 @@ class TestFollowUpContinuity:
         assert "asset_breakdown" in reasoner.calls[1]["user_outputs"]
         assert "sector_breakdown" in reasoner.calls[1]["user_outputs"]
 
+    def test_followup_reuses_session_user_context_for_new_tool_call(self):
+        sessions = SessionStore()
+        reasoner = _make_recording_reasoner(answers=["A1", "A2"])
+        llm = _make_recording_llm([
+            _make_tool_call_message([
+                ("financial_engine",
+                 {"function": "asset_breakdown", "parameters": {}}),
+            ]),
+            _make_text_message("ack"),
+            _make_tool_call_message([
+                ("financial_engine",
+                 {"function": "sector_breakdown", "parameters": {}}),
+            ]),
+            _make_text_message("ack"),
+        ])
+        agent = _build_agent(
+            llm,
+            reasoner,
+            sessions,
+            api_results={
+                "fin-engine": {
+                    "asset_breakdown": {"equity": 60},
+                    "sector_breakdown": {"tech": 40},
+                }
+            },
+        )
+
+        out1 = anyio.run(
+            agent.run,
+            "What is my asset breakdown?",
+            3,
+            "sess-user",
+            "1912650190",
+        )
+        out2 = anyio.run(
+            agent.run,
+            "Now show my sector breakdown.",
+            3,
+            "sess-user",
+        )
+
+        assert out1["debug"]["tool_results"][0]["params"]["parameters"]["user_id"] == "1912650190"
+        assert out2["debug"]["tool_results"][0]["params"]["parameters"]["user_id"] == "1912650190"
+
+    def test_user_context_is_injected_into_llm_messages(self):
+        sessions = SessionStore()
+        reasoner = _make_recording_reasoner(answers=["A1"])
+        llm = _make_recording_llm([
+            _make_tool_call_message([("get_risk_profile", {})]),
+            _make_text_message("ack"),
+        ])
+        agent = _build_agent(llm, reasoner, sessions)
+
+        anyio.run(
+            agent.run,
+            "What's my risk profile?",
+            3,
+            "sess-context",
+            "1912650190",
+        )
+
+        first_call_messages = llm.captured_messages[0]
+        assert first_call_messages[1]["role"] == "system"
+        assert "Authenticated user context" in first_call_messages[1]["content"]
+        assert "user_id: 1912650190" in first_call_messages[1]["content"]
+
 
 class TestSessionIsolation:
     """Plan §457: two session IDs do not share history."""
