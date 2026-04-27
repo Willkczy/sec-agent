@@ -1,12 +1,15 @@
 # Demo Queries — Glass-Box Aligned
 
-Focused showcase of sec-agent's tool-calling, organized to mirror the Reasoning_LLM_TiFin Glass-Box eval dataset (`Reasoning_LLM_TiFin/example_data/`). Each query is labeled with its source session so the reasoning agent's outputs can be cross-referenced later.
+Focused showcase of sec-agent end-to-end, organized to mirror the Reasoning_LLM_TiFin Glass-Box eval dataset (`Reasoning_LLM_TiFin/example_data/`). Each query is labeled with its source session so the reasoning agent's outputs can be cross-referenced later.
+
+The user-facing answer in every response is produced by the Glass-Box Answerer (running inside `Reasoning_LLM_TiFin`), not by the tool-calling LLM. The `debug.reasoning.trace` field is the Reasoner's structured trace; the `debug.reasoning.api_keys` field is the set of Glass-Box keys the Reasoner grounded against. See `README.md#glass-box-reasoning-integration` for the full handoff.
 
 ## Prerequisites
 
 1. Backend services running and reachable at `API_BASE_URL`
-2. VPN on (self-hosted LLM at `103.42.51.88:2205`)
-3. Agent running: `uv run uvicorn main:app --port 8090 --reload`
+2. Two LLMs reachable: the **tool-calling LLM** (sec-agent's `LLM_BASE_URL`) and the **Glass-Box LLM** (configured inside `Reasoning_LLM_TiFin`). Both are typically the self-hosted GPU at `103.42.51.88:2205`, which requires VPN / GCP.
+3. `Reasoning_LLM_TiFin` checked out at `../Reasoning_LLM_TiFin` (sibling path; sec-agent imports it via `sys.path` shim)
+4. Agent running: `uv run uvicorn main:app --port 8090 --reload`
 
 ## Curl template
 
@@ -14,6 +17,12 @@ Focused showcase of sec-agent's tool-calling, organized to mirror the Reasoning_
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"query": "<QUERY>"}' | python3 -m json.tool
+
+# With a session_id to chain follow-ups (the second turn typically reuses the
+# cached api_keys/user_outputs and does NOT re-fire the tool)
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "<QUERY>", "session_id": "demo-1"}' | python3 -m json.tool
 ```
 
 ## Reference user
@@ -110,7 +119,15 @@ Exercises the `loan_financing_amount` parameter added to `goal_defaults` and `si
 
 Every `/ask` response includes:
 
-- `answer` — the LLM's final natural-language text
-- `debug.tool_results` — the tools that were called and the API responses
+- `answer` — the user-facing answer **produced by the Glass-Box Answerer** (not by the tool-calling LLM). Grounded in the Reasoner's trace.
+- `session_id` — echoed back from the request (or `null` if none was supplied).
+- `debug.iterations` — per-iteration tool plan from the tool-calling LLM.
+- `debug.tool_results` — the tools that were called and the raw backend responses (the inputs the Reasoner grounded against).
+- `debug.reasoning` — Glass-Box output:
+  - `api_keys` — the Glass-Box description keys the Reasoner used (e.g. `["asset_breakdown"]`).
+  - `trace` — the Reasoner's structured trace (EVIDENCE / CONCLUSION / CAVEATS, etc.).
+  - `verifier_verdict` and `verifier_retries` — populated only when `REASONING_ARCHITECTURE=three_layer`.
+  - `unmapped_tools` — tools that were called but had no Glass-Box mapping (should be empty for the demo queries below).
+- `debug.reused_session_cache` — `true` when a follow-up turn reused the prior cache without re-firing any tool.
 
-For the reasoning-agent handoff, the interesting field is `debug.tool_results`. Each entry has `tool` (name), `parameters` (extracted kwargs), and `result` (raw API JSON). Teammates can feed those results straight into the reasoning agent alongside the Glass-Box session ID shown above.
+When validating against the Glass-Box eval dataset, compare `debug.reasoning.api_keys` against the session's `api_used_q1`, and compare `debug.reasoning.trace` against the corresponding entry in `Reasoning_LLM_TiFin/test_data/all_users_generated_sessions.json`.
