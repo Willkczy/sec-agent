@@ -776,6 +776,29 @@ TOOLS = {
 }
 
 
+# Tools enabled for the Glass-Box reasoning integration.
+# Only Financial Engine + Model Portfolio tools that have a matching
+# description in Reasoning_LLM_TiFin/services/glass_box/data/all_api_descriptions.json.
+# Excluded:
+#   - SRC + ML services (no Glass-Box descriptions).
+#   - determine_income_sector (utility, no Glass-Box description).
+#   - build_stock_portfolio (backend always 500s; see Reasoning_LLM_TiFin/CLAUDE.md).
+ACTIVE_TOOLS: set[str] = {
+    # Financial Engine
+    "financial_engine",
+    # Model Portfolio
+    "get_portfolio_options",
+    "backtest_portfolio",
+    "portfolio_builder",
+    "get_risk_profile",
+    "risk_profile_v2",
+    "single_goal_optimizer",
+    "multi_goal_optimizer",
+    "goal_defaults",
+    "stock_to_fund",
+}
+
+
 def get_tools_prompt() -> str:
     """Render the TOOLS registry into a formatted string for the LLM system prompt."""
     lines = []
@@ -808,6 +831,8 @@ def get_openai_tools() -> list[dict]:
     """
     openai_tools = []
     for tool_name, tool_def in TOOLS.items():
+        if tool_name not in ACTIVE_TOOLS:
+            continue
         properties = {}
         required = []
         for param_name, param_schema in tool_def["parameters"].items():
