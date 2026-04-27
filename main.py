@@ -36,6 +36,10 @@ api_client = APIClient(
     base_url=settings.API_BASE_URL,
     enable_auth=settings.ENABLE_AUTH,
     local_mode=settings.LOCAL_MODE,
+    service_base_urls={
+        "fin-engine": settings.FIN_ENGINE_BASE_URL,
+        "model-portfolio": settings.MODEL_PORTFOLIO_BASE_URL,
+    },
 )
 
 reasoning_adapter = ReasoningAdapter()
