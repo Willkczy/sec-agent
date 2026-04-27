@@ -62,25 +62,35 @@ def _make_stub_reasoner(
     unmapped: list[str] | None = None,
 ):
     """Stub ReasoningAdapter — returns predictable payload without invoking
-    Glass-Box or any LLM. Records the (question, tool_results) it was called
-    with on `.calls`."""
+    Glass-Box or any LLM. Records each call on `.calls` so tests can assert
+    what was passed in (question, api_keys, user_outputs, history)."""
     stub = MagicMock()
     stub.calls = []
 
-    async def _answer(*, question, tool_results, history, history_traces):
+    async def _answer(
+        *,
+        question,
+        api_keys: list[str],
+        user_outputs: dict,
+        history=None,
+        history_traces=None,
+        unmapped_tools=None,
+    ):
         stub.calls.append({
             "question": question,
-            "tool_results": list(tool_results),
-            "history": list(history),
-            "history_traces": list(history_traces),
+            "api_keys": list(api_keys),
+            "user_outputs": dict(user_outputs),
+            "history": list(history or []),
+            "history_traces": list(history_traces or []),
+            "unmapped_tools": list(unmapped_tools or []),
         })
         return {
             "answer": answer,
             "reasoning_trace": trace,
-            "api_keys": api_keys if api_keys is not None else [],
+            "api_keys": api_keys if api_keys else [],
             "verifier_verdict": verifier_verdict,
             "verifier_retries": verifier_retries,
-            "unmapped_tools": unmapped if unmapped is not None else [],
+            "unmapped_tools": unmapped if unmapped is not None else (unmapped_tools or []),
         }
 
     stub.answer = _answer
@@ -178,7 +188,10 @@ class TestAgentToolCallingRoutesToReasoner:
         assert result["debug"]["reasoning"]["trace"] == "EVIDENCE: equity=60%"
         assert len(reasoner.calls) == 1
         assert reasoner.calls[0]["question"] == "Show asset breakdown for 1912650190"
-        assert len(reasoner.calls[0]["tool_results"]) == 1
+        assert reasoner.calls[0]["api_keys"] == ["asset_breakdown"]
+        assert reasoner.calls[0]["user_outputs"] == {
+            "asset_breakdown": {"equity": 60.0, "debt": 40.0}
+        }
 
     def test_multiple_tool_calls_in_one_turn_pass_all_results_to_reasoner(self):
         reasoner = _make_stub_reasoner(api_keys=["asset_breakdown", "get_risk_profile"])
@@ -198,7 +211,9 @@ class TestAgentToolCallingRoutesToReasoner:
         result = anyio.run(agent.run, "Asset breakdown and risk profile")
 
         assert len(result["debug"]["tool_results"]) == 2
-        assert len(reasoner.calls[0]["tool_results"]) == 2
+        assert sorted(reasoner.calls[0]["api_keys"]) == sorted(
+            ["asset_breakdown", "get_risk_profile"]
+        )
 
     def test_chained_tool_iterations_collected_and_reasoned_once(self):
         reasoner = _make_stub_reasoner()
@@ -219,9 +234,11 @@ class TestAgentToolCallingRoutesToReasoner:
 
         assert len(result["debug"]["iterations"]) == 2
         assert len(result["debug"]["tool_results"]) == 2
-        # Reasoner is called once with the full collected tool_results.
+        # Reasoner is called once with the full collected api_keys.
         assert len(reasoner.calls) == 1
-        assert len(reasoner.calls[0]["tool_results"]) == 2
+        assert reasoner.calls[0]["api_keys"] == [
+            "get_risk_profile", "asset_breakdown",
+        ]
 
 
 class TestAgentMaxIterationsHandsOffToReasoner:
@@ -244,8 +261,10 @@ class TestAgentMaxIterationsHandsOffToReasoner:
 
         assert result["answer"] == "Reasoner final answer."
         assert len(result["debug"]["iterations"]) == 3
+        assert len(result["debug"]["tool_results"]) == 3
         assert len(reasoner.calls) == 1
-        assert len(reasoner.calls[0]["tool_results"]) == 3
+        # All 3 calls were the same tool/key, so they collapse to 1 api_key.
+        assert reasoner.calls[0]["api_keys"] == ["get_risk_profile"]
 
 
 class TestAgentErrorHandling:

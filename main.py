@@ -207,12 +207,17 @@ class Agent:
                 "debug": debug,
             }
 
-        # Tool calls collected — hand off to Glass-Box reasoner.
+        # Tool calls collected — convert to Glass-Box inputs and reason.
+        api_keys, user_outputs, unmapped = ReasoningAdapter.build_inputs(
+            debug["tool_results"]
+        )
         reasoning = await self.reasoner.answer(
             question=user_query,
-            tool_results=debug["tool_results"],
+            api_keys=api_keys,
+            user_outputs=user_outputs,
             history=[],
             history_traces=[],
+            unmapped_tools=unmapped,
         )
         debug["reasoning"] = {
             "api_keys": reasoning["api_keys"],

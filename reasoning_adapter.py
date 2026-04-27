@@ -117,72 +117,44 @@ def _get_model() -> TwoLayerGlassBoxModel:
 # Public adapter
 # ---------------------------------------------------------------------------
 
+OUT_OF_SCOPE_MESSAGE = (
+    "No supported tool outputs were available to reason over. "
+    "This assistant covers Financial Engine and Model Portfolio "
+    "queries only."
+)
+
+
 class ReasoningAdapter:
-    """Stateless wrapper that turns sec-agent tool results into a Glass-Box
-    answer + reasoning trace.
+    """Stateless wrapper around the Glass-Box reasoning models.
 
-    History is supplied per-call (the adapter does not own session state).
-    """
+    Two-step usage so the caller (main.py) can merge live tool results
+    with prior session-cached api_keys/user_outputs before reasoning:
 
-    async def answer(
-        self,
-        *,
-        question: str,
-        tool_results: list[dict[str, Any]],
-        history: list[dict[str, Any]] | None = None,
-        history_traces: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        history = history if history is not None else []
-        history_traces = history_traces if history_traces is not None else []
-
-        api_keys, user_outputs, unmapped = self._build_inputs(tool_results)
-
-        if not api_keys:
-            return {
-                "answer": (
-                    "No supported tool outputs were available to reason over. "
-                    "This assistant covers Financial Engine and Model Portfolio "
-                    "queries only."
-                ),
-                "reasoning_trace": "",
-                "api_keys": [],
-                "verifier_verdict": None,
-                "verifier_retries": 0,
-                "unmapped_tools": unmapped,
-            }
-
-        model = _get_model()
-        answer, trace = await asyncio.to_thread(
-            model.ask,
-            question,
-            api_keys,
-            history,
-            history_traces,
-            user_outputs,
+        api_keys, user_outputs, unmapped = ReasoningAdapter.build_inputs(tool_results)
+        # ... merge with session cache ...
+        result = await adapter.answer(
+            question=...,
+            api_keys=api_keys,
+            user_outputs=user_outputs,
+            history=...,
+            history_traces=...,
         )
 
-        verifier_verdict = getattr(model, "last_verifier_verdict", None)
-        verifier_retries = getattr(model, "last_verifier_retries", 0)
-
-        return {
-            "answer": answer,
-            "reasoning_trace": trace,
-            "api_keys": api_keys,
-            "verifier_verdict": verifier_verdict,
-            "verifier_retries": verifier_retries,
-            "unmapped_tools": unmapped,
-        }
+    History lists are mutated in place by the underlying Glass-Box model
+    (one user/assistant pair appended per call), so the caller's session
+    store sees the new turn automatically.
+    """
 
     @staticmethod
-    def _build_inputs(
+    def build_inputs(
         tool_results: list[dict[str, Any]],
     ) -> tuple[list[str], dict[str, Any], list[str]]:
         """Convert tool_results → (api_keys, user_outputs, unmapped_tool_names).
 
-        - Skips tool calls that returned an error envelope (no signal for the
-          Reasoner; would pollute the trace).
-        - Last-write-wins if the same api_key is produced twice (later call
-          presumed more relevant).
+        - Skips tool calls that returned an error envelope (no signal for
+          the Reasoner; would pollute the trace).
+        - Last-write-wins if the same api_key is produced twice (later
+          call presumed more relevant).
         """
         api_keys: list[str] = []
         user_outputs: dict[str, Any] = {}
@@ -212,3 +184,55 @@ class ReasoningAdapter:
                 api_keys.append(api_key)
 
         return api_keys, user_outputs, unmapped
+
+    async def answer(
+        self,
+        *,
+        question: str,
+        api_keys: list[str],
+        user_outputs: dict[str, Any],
+        history: list[dict[str, Any]] | None = None,
+        history_traces: list[dict[str, Any]] | None = None,
+        unmapped_tools: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run the Glass-Box pipeline with already-resolved inputs.
+
+        Returns the answer + trace + verifier metadata. Forwards
+        unmapped_tools through unchanged so callers can include the gap
+        in debug output.
+        """
+        history = history if history is not None else []
+        history_traces = history_traces if history_traces is not None else []
+        unmapped_tools = unmapped_tools if unmapped_tools is not None else []
+
+        if not api_keys:
+            return {
+                "answer": OUT_OF_SCOPE_MESSAGE,
+                "reasoning_trace": "",
+                "api_keys": [],
+                "verifier_verdict": None,
+                "verifier_retries": 0,
+                "unmapped_tools": unmapped_tools,
+            }
+
+        model = _get_model()
+        answer, trace = await asyncio.to_thread(
+            model.ask,
+            question,
+            api_keys,
+            history,
+            history_traces,
+            user_outputs,
+        )
+
+        verifier_verdict = getattr(model, "last_verifier_verdict", None)
+        verifier_retries = getattr(model, "last_verifier_retries", 0)
+
+        return {
+            "answer": answer,
+            "reasoning_trace": trace,
+            "api_keys": api_keys,
+            "verifier_verdict": verifier_verdict,
+            "verifier_retries": verifier_retries,
+            "unmapped_tools": unmapped_tools,
+        }
