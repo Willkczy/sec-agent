@@ -1,6 +1,6 @@
 """
-Unit tests for Agent.run() orchestration — mocked LLM + mocked APIClient.
-No network calls.
+Unit tests for Agent.run() orchestration — mocked LLM, mocked APIClient,
+and a stub ReasoningAdapter so no Glass-Box / network calls occur.
 """
 
 import json
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.unit
 # Helpers to build mock LLM responses
 # ---------------------------------------------------------------------------
 
-def _make_text_message(content: str):
+def _make_text_message(content: str | None):
     """Mock a completion message with text only (no tool calls)."""
     msg = MagicMock()
     msg.content = content
@@ -53,12 +53,46 @@ def _make_completion(message):
     return resp
 
 
-def _build_agent(llm_responses: list, api_results: dict | None = None):
-    """Build an Agent with mocked LLM and API clients.
+def _make_stub_reasoner(
+    answer: str = "REASONER_ANSWER",
+    trace: str = "TRACE",
+    api_keys: list[str] | None = None,
+    verifier_verdict=None,
+    verifier_retries: int = 0,
+    unmapped: list[str] | None = None,
+):
+    """Stub ReasoningAdapter — returns predictable payload without invoking
+    Glass-Box or any LLM. Records the (question, tool_results) it was called
+    with on `.calls`."""
+    stub = MagicMock()
+    stub.calls = []
 
-    llm_responses: list of messages the LLM returns in order.
-    api_results: dict mapping tool_name -> result dict.
-    """
+    async def _answer(*, question, tool_results, history, history_traces):
+        stub.calls.append({
+            "question": question,
+            "tool_results": list(tool_results),
+            "history": list(history),
+            "history_traces": list(history_traces),
+        })
+        return {
+            "answer": answer,
+            "reasoning_trace": trace,
+            "api_keys": api_keys if api_keys is not None else [],
+            "verifier_verdict": verifier_verdict,
+            "verifier_retries": verifier_retries,
+            "unmapped_tools": unmapped if unmapped is not None else [],
+        }
+
+    stub.answer = _answer
+    return stub
+
+
+def _build_agent(
+    llm_responses: list,
+    api_results: dict | None = None,
+    reasoner=None,
+):
+    """Build an Agent with mocked LLM, API client, and reasoner."""
     mock_llm = MagicMock()
     completions = [_make_completion(msg) for msg in llm_responses]
     mock_llm.chat.completions.create = AsyncMock(side_effect=completions)
@@ -66,7 +100,6 @@ def _build_agent(llm_responses: list, api_results: dict | None = None):
     mock_api = MagicMock()
     if api_results:
         async def _call_tool(endpoint, params):
-            # Match endpoint to tool name via a simple lookup
             for name, result in api_results.items():
                 if name in endpoint:
                     return result
@@ -76,7 +109,10 @@ def _build_agent(llm_responses: list, api_results: dict | None = None):
     else:
         mock_api.call_tool = AsyncMock(return_value={"data": "mock_result"})
 
-    return Agent(llm=mock_llm, api=mock_api)
+    if reasoner is None:
+        reasoner = _make_stub_reasoner()
+
+    return Agent(llm=mock_llm, api=mock_api, reasoner=reasoner)
 
 
 # ---------------------------------------------------------------------------
@@ -84,108 +120,140 @@ def _build_agent(llm_responses: list, api_results: dict | None = None):
 # ---------------------------------------------------------------------------
 
 class TestAgentTextResponse:
-    """Agent should return immediately when LLM gives text (no tool calls)."""
+    """When the LLM emits text without calling any tool, the agent returns
+    that text directly — the reasoner has nothing to ground on."""
 
-    def test_returns_text_directly(self):
-        agent = _build_agent([_make_text_message("The answer is 42.")])
+    def test_returns_text_directly_when_no_tool_calls(self):
+        reasoner = _make_stub_reasoner()
+        agent = _build_agent(
+            [_make_text_message("Out of scope: I cover FE/MP only.")],
+            reasoner=reasoner,
+        )
 
-        result = anyio.run(agent.run, "What is the answer?")
+        result = anyio.run(agent.run, "What is the meaning of life?")
 
-        assert result["answer"] == "The answer is 42."
+        assert result["answer"] == "Out of scope: I cover FE/MP only."
         assert result["debug"]["iterations"] == []
         assert result["debug"]["tool_results"] == []
+        assert "reasoning" not in result["debug"]
+        assert reasoner.calls == []  # reasoner never invoked
 
-    def test_empty_content_returns_fallback(self):
+    def test_empty_content_returns_fallback_message(self):
         agent = _build_agent([_make_text_message(None)])
 
         result = anyio.run(agent.run, "test")
 
-        assert result["answer"] == "No answer produced."
+        assert "Financial Engine" in result["answer"]
 
 
-class TestAgentToolCalling:
-    """Agent should execute tool calls and feed results back."""
+class TestAgentToolCallingRoutesToReasoner:
+    """When tools fire, the reasoner produces the final answer and the
+    Glass-Box trace lands in debug.reasoning."""
 
-    def test_single_tool_call_then_text(self):
-        agent = _build_agent([
-            _make_tool_call_message([("search_funds", {"query": "large cap"})]),
-            _make_text_message("Found 3 large cap funds."),
-        ])
+    def test_single_tool_call_then_reasoner(self):
+        reasoner = _make_stub_reasoner(
+            answer="Asset breakdown summarized.",
+            trace="EVIDENCE: equity=60%",
+            api_keys=["asset_breakdown"],
+        )
+        agent = _build_agent(
+            [
+                _make_tool_call_message([
+                    ("financial_engine",
+                     {"function": "asset_breakdown",
+                      "parameters": {"user_id": "1912650190"}}),
+                ]),
+                _make_text_message("ack"),
+            ],
+            api_results={
+                "fin-engine": {"asset_breakdown": {"equity": 60.0, "debt": 40.0}}
+            },
+            reasoner=reasoner,
+        )
 
-        result = anyio.run(agent.run, "Show me large cap funds")
+        result = anyio.run(agent.run, "Show asset breakdown for 1912650190")
 
-        assert result["answer"] == "Found 3 large cap funds."
-        assert len(result["debug"]["tool_results"]) == 1
-        assert result["debug"]["tool_results"][0]["tool"] == "search_funds"
-        assert len(result["debug"]["iterations"]) == 1
+        assert result["answer"] == "Asset breakdown summarized."
+        assert result["debug"]["reasoning"]["api_keys"] == ["asset_breakdown"]
+        assert result["debug"]["reasoning"]["trace"] == "EVIDENCE: equity=60%"
+        assert len(reasoner.calls) == 1
+        assert reasoner.calls[0]["question"] == "Show asset breakdown for 1912650190"
+        assert len(reasoner.calls[0]["tool_results"]) == 1
 
-    def test_multiple_tool_calls_in_one_turn(self):
-        agent = _build_agent([
-            _make_tool_call_message([
-                ("search_funds", {"query": "large cap"}),
-                ("get_risk_profile", {"user_id": 123}),
-            ]),
-            _make_text_message("Here are funds and your risk profile."),
-        ])
+    def test_multiple_tool_calls_in_one_turn_pass_all_results_to_reasoner(self):
+        reasoner = _make_stub_reasoner(api_keys=["asset_breakdown", "get_risk_profile"])
+        agent = _build_agent(
+            [
+                _make_tool_call_message([
+                    ("financial_engine",
+                     {"function": "asset_breakdown",
+                      "parameters": {"user_id": "1"}}),
+                    ("get_risk_profile", {"user_id": 123}),
+                ]),
+                _make_text_message("ack"),
+            ],
+            reasoner=reasoner,
+        )
 
-        result = anyio.run(agent.run, "Funds and risk profile")
+        result = anyio.run(agent.run, "Asset breakdown and risk profile")
 
         assert len(result["debug"]["tool_results"]) == 2
-        tool_names = [r["tool"] for r in result["debug"]["tool_results"]]
-        assert "search_funds" in tool_names
-        assert "get_risk_profile" in tool_names
+        assert len(reasoner.calls[0]["tool_results"]) == 2
 
-    def test_two_iteration_chain(self):
-        """Tool call -> result -> another tool call -> result -> text."""
-        agent = _build_agent([
-            _make_tool_call_message([("search_funds", {"query": "SBI"})]),
-            _make_tool_call_message([("get_fund_peers", {"security_id": "123"})]),
-            _make_text_message("Peers found."),
-        ])
+    def test_chained_tool_iterations_collected_and_reasoned_once(self):
+        reasoner = _make_stub_reasoner()
+        agent = _build_agent(
+            [
+                _make_tool_call_message([("get_risk_profile", {"user_id": 1})]),
+                _make_tool_call_message([
+                    ("financial_engine",
+                     {"function": "asset_breakdown",
+                      "parameters": {"user_id": "1"}}),
+                ]),
+                _make_text_message("ack"),
+            ],
+            reasoner=reasoner,
+        )
 
-        result = anyio.run(agent.run, "Peers of SBI Large Cap")
+        result = anyio.run(agent.run, "Profile then breakdown")
 
-        assert result["answer"] == "Peers found."
         assert len(result["debug"]["iterations"]) == 2
         assert len(result["debug"]["tool_results"]) == 2
+        # Reasoner is called once with the full collected tool_results.
+        assert len(reasoner.calls) == 1
+        assert len(reasoner.calls[0]["tool_results"]) == 2
 
 
-class TestAgentMaxIterations:
-    """Agent should force a final answer when max_iters is exhausted."""
+class TestAgentMaxIterationsHandsOffToReasoner:
+    """When max_iters is exhausted with tool calls still pending, the agent
+    no longer makes a forced LLM text call — it hands the collected
+    tool_results to the reasoner."""
 
-    def test_max_iterations_forces_text(self):
-        # 3 iterations of tool calls + 1 forced text response
-        agent = _build_agent([
-            _make_tool_call_message([("search_funds", {"query": "a"})]),
-            _make_tool_call_message([("search_funds", {"query": "b"})]),
-            _make_tool_call_message([("search_funds", {"query": "c"})]),
-            _make_text_message("Forced final answer."),
-        ])
+    def test_max_iters_exhausted_routes_collected_results_to_reasoner(self):
+        reasoner = _make_stub_reasoner(answer="Reasoner final answer.")
+        agent = _build_agent(
+            [
+                _make_tool_call_message([("get_risk_profile", {"user_id": 1})]),
+                _make_tool_call_message([("get_risk_profile", {"user_id": 2})]),
+                _make_tool_call_message([("get_risk_profile", {"user_id": 3})]),
+            ],
+            reasoner=reasoner,
+        )
 
         result = anyio.run(agent.run, "test", 3)
 
-        assert result["answer"] == "Forced final answer."
+        assert result["answer"] == "Reasoner final answer."
         assert len(result["debug"]["iterations"]) == 3
-
-    def test_max_iterations_empty_content(self):
-        agent = _build_agent([
-            _make_tool_call_message([("search_funds", {"query": "a"})]),
-            _make_tool_call_message([("search_funds", {"query": "b"})]),
-            _make_tool_call_message([("search_funds", {"query": "c"})]),
-            _make_text_message(None),
-        ])
-
-        result = anyio.run(agent.run, "test", 3)
-
-        assert result["answer"] == "Max iterations reached with no answer."
+        assert len(reasoner.calls) == 1
+        assert len(reasoner.calls[0]["tool_results"]) == 3
 
 
 class TestAgentErrorHandling:
 
-    def test_unknown_tool_returns_error(self):
+    def test_unknown_tool_returns_error_in_debug(self):
         agent = _build_agent([
             _make_tool_call_message([("nonexistent_tool", {})]),
-            _make_text_message("Tool not found."),
+            _make_text_message("ack"),
         ])
 
         result = anyio.run(agent.run, "test")
@@ -195,29 +263,27 @@ class TestAgentErrorHandling:
         assert "Unknown tool" in error_result["error"]
 
     def test_invalid_json_arguments_uses_empty_dict(self):
-        """When LLM returns malformed JSON in arguments, agent should use {}."""
         msg = MagicMock()
         msg.content = None
         tc = MagicMock()
         tc.id = "call_0"
-        tc.function.name = "search_funds"
+        tc.function.name = "get_risk_profile"
         tc.function.arguments = "{invalid json"
         msg.tool_calls = [tc]
 
-        agent = _build_agent([msg, _make_text_message("Done.")])
+        agent = _build_agent([msg, _make_text_message("ack")])
 
         result = anyio.run(agent.run, "test")
 
-        # Should not crash; params should be {}
         assert result["debug"]["tool_results"][0]["params"] == {}
 
 
 class TestAgentDebugOutput:
 
-    def test_debug_structure(self):
+    def test_debug_has_iterations_tool_results_and_reasoning_when_tools_fire(self):
         agent = _build_agent([
-            _make_tool_call_message([("search_funds", {"query": "test"})]),
-            _make_text_message("Answer."),
+            _make_tool_call_message([("get_risk_profile", {"user_id": 1})]),
+            _make_text_message("ack"),
         ])
 
         result = anyio.run(agent.run, "test")
@@ -225,18 +291,19 @@ class TestAgentDebugOutput:
         debug = result["debug"]
         assert "iterations" in debug
         assert "tool_results" in debug
-        assert isinstance(debug["iterations"], list)
-        assert isinstance(debug["tool_results"], list)
+        assert "reasoning" in debug
+        for key in ("api_keys", "trace", "verifier_verdict",
+                    "verifier_retries", "unmapped_tools"):
+            assert key in debug["reasoning"]
 
         iteration = debug["iterations"][0]
-        assert "iteration" in iteration
         assert iteration["iteration"] == 1
         assert "tool_calls" in iteration
 
     def test_tool_result_record_structure(self):
         agent = _build_agent([
-            _make_tool_call_message([("search_funds", {"query": "test"})]),
-            _make_text_message("Answer."),
+            _make_tool_call_message([("get_risk_profile", {"user_id": 1})]),
+            _make_text_message("ack"),
         ])
 
         result = anyio.run(agent.run, "test")
