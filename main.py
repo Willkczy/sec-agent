@@ -18,6 +18,8 @@ from models import AskRequest, AskResponse
 from tools import TOOLS, get_openai_tools
 from prompts import SYSTEM_PROMPT
 from api_client import APIClient
+from reasoning_adapter import ReasoningAdapter
+from session_store import SessionStore, SessionState
 
 load_dotenv()
 
@@ -35,6 +37,13 @@ api_client = APIClient(
     enable_auth=settings.ENABLE_AUTH,
     local_mode=settings.LOCAL_MODE,
 )
+
+reasoning_adapter = ReasoningAdapter()
+
+# In-memory per-session conversation state (Phase 2 prototype).
+# Production should swap this for Redis / Postgres / app session service
+# (see session_store.py and integration plan §298).
+session_store = SessionStore()
 
 # Pre-build the OpenAI tools list (static across requests)
 OPENAI_TOOLS = get_openai_tools()
@@ -69,9 +78,20 @@ class Agent:
     repeat until model responds with text (or max_iters reached).
     """
 
-    def __init__(self, llm: AsyncOpenAI, api: APIClient):
+    def __init__(
+        self,
+        llm: AsyncOpenAI,
+        api: APIClient,
+        reasoner: ReasoningAdapter,
+        sessions: SessionStore | None = None,
+    ):
         self.llm = llm
         self.api = api
+        self.reasoner = reasoner
+        # If no store is supplied, the agent runs stateless (every call
+        # gets a fresh ephemeral SessionState). Production callers pass
+        # the module-level store; tests can pass their own isolated one.
+        self.sessions = sessions
 
     # -- Execute a single tool call -----------------------------------------
 
@@ -85,23 +105,54 @@ class Agent:
 
     # -- Main orchestration loop --------------------------------------------
 
+    def _load_session(self, session_id: str | None) -> SessionState:
+        """Resolve the SessionState for this turn.
+
+        - With a session_id and a store: persistent, follow-ups continue.
+        - Without one: ephemeral state, no continuity (one-shot call).
+        """
+        if session_id and self.sessions is not None:
+            return self.sessions.get_or_create(session_id)
+        return SessionState()
+
     async def run(
-        self, user_query: str, max_iters: int = 3
+        self,
+        user_query: str,
+        max_iters: int = 3,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Full orchestration loop using native function calling.
 
-        The model decides when it's done by returning a text response
-        instead of more tool calls. No explicit ``next_step_required``
-        flag is needed.
+        The tool-calling LLM only chooses + executes tools. Once tool
+        calls finish (model emits text or max_iters reached), the
+        collected tool_results are converted to Glass-Box inputs,
+        merged with prior session-cached api_keys/user_outputs, and
+        handed to ReasoningAdapter for the Reasoner + Answerer pipeline.
+
+        Follow-up branches:
+          - Tool calls fired → reason over merged (new + cached) inputs.
+          - No tool calls but the session has a prior cache (a follow-up
+            like "how was that calculated?" that doesn't need fresh
+            data) → reason over cached inputs alone.
+          - No tool calls and no cache → return the assistant's text
+            verbatim (out-of-scope query).
 
         Returns {"answer": str, "debug": {...}}.
         """
+        session = self._load_session(session_id)
+
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_query},
         ]
+        # Inject prior user-facing turns so the tool-calling LLM
+        # understands references like "how was that calculated?" and can
+        # decide to skip a redundant tool call.
+        messages.extend(session.history)
+        messages.append({"role": "user", "content": user_query})
+
         debug: dict[str, Any] = {"iterations": [], "tool_results": []}
+        last_assistant_text: str = ""
 
         for iteration in range(max_iters):
             resp = await self.llm.chat.completions.create(
@@ -122,6 +173,7 @@ class Agent:
             msg_dict: dict[str, Any] = {"role": "assistant"}
             if assistant_msg.content:
                 msg_dict["content"] = assistant_msg.content
+                last_assistant_text = assistant_msg.content
             if assistant_msg.tool_calls:
                 msg_dict["tool_calls"] = [
                     {
@@ -136,12 +188,9 @@ class Agent:
                 ]
             messages.append(msg_dict)
 
-            # If the model returned text with no tool calls, we're done.
+            # Model is done planning tool calls.
             if not assistant_msg.tool_calls:
-                return {
-                    "answer": assistant_msg.content or "No answer produced.",
-                    "debug": debug,
-                }
+                break
 
             # Execute each tool call and feed results back.
             iter_results = []
@@ -184,21 +233,63 @@ class Agent:
                 ],
             })
 
-        # Exhausted max_iters — ask the model for a final answer without tools
-        # so it synthesizes whatever data it has.
-        resp = await self.llm.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=4096,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": False}
-            },
+        # Resolve which (api_keys, user_outputs) the Reasoner should see.
+        new_keys, new_outputs, unmapped = ReasoningAdapter.build_inputs(
+            debug["tool_results"]
         )
-        return {
-            "answer": resp.choices[0].message.content or "Max iterations reached with no answer.",
-            "debug": debug,
+
+        if not debug["tool_results"] and not session.last_api_keys:
+            # No new tool call AND no prior session cache — nothing to
+            # ground on. Return the assistant's text directly.
+            return {
+                "answer": last_assistant_text or (
+                    "No answer produced. This assistant covers Financial "
+                    "Engine and Model Portfolio queries only."
+                ),
+                "debug": debug,
+            }
+
+        if not debug["tool_results"]:
+            # Follow-up that did not need a fresh tool call. Reuse the
+            # prior session cache so the Reasoner can answer from the
+            # previous evidence (and prior history_traces).
+            merged_keys = list(session.last_api_keys)
+            merged_outputs = dict(session.last_user_outputs)
+            debug["reused_session_cache"] = True
+        else:
+            # New tool calls collected — merge with any prior cache so a
+            # follow-up that does fetch fresh data still has access to
+            # earlier evidence.
+            merged_keys = list(
+                dict.fromkeys(list(session.last_api_keys) + new_keys)
+            )
+            merged_outputs = {**session.last_user_outputs, **new_outputs}
+
+        reasoning = await self.reasoner.answer(
+            question=user_query,
+            api_keys=merged_keys,
+            user_outputs=merged_outputs,
+            history=session.history,
+            history_traces=session.history_traces,
+            unmapped_tools=unmapped,
+        )
+
+        # Persist updated session cache for the next turn. The Reasoner
+        # has already mutated session.history and session.history_traces
+        # in place. Trim if a real store is backing this session.
+        session.last_api_keys = merged_keys
+        session.last_user_outputs = merged_outputs
+        if session_id and self.sessions is not None:
+            self.sessions.trim(session)
+
+        debug["reasoning"] = {
+            "api_keys": reasoning["api_keys"],
+            "trace": reasoning["reasoning_trace"],
+            "verifier_verdict": reasoning["verifier_verdict"],
+            "verifier_retries": reasoning["verifier_retries"],
+            "unmapped_tools": reasoning["unmapped_tools"],
         }
+        return {"answer": reasoning["answer"], "debug": debug}
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +307,21 @@ async def health():
 async def ask(request: AskRequest):
     """Main endpoint: takes a natural language query, returns an answer."""
     try:
-        agent = Agent(llm=llm_client, api=api_client)
-        result = await agent.run(request.query, request.max_iters)
-        return AskResponse(answer=result["answer"], debug=result["debug"])
+        agent = Agent(
+            llm=llm_client,
+            api=api_client,
+            reasoner=reasoning_adapter,
+            sessions=session_store,
+        )
+        result = await agent.run(
+            request.query,
+            request.max_iters,
+            session_id=request.session_id,
+        )
+        return AskResponse(
+            answer=result["answer"],
+            session_id=request.session_id,
+            debug=result["debug"],
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
