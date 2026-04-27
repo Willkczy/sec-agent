@@ -241,6 +241,10 @@ async def ask(request: AskRequest):
     try:
         agent = Agent(llm=llm_client, api=api_client, reasoner=reasoning_adapter)
         result = await agent.run(request.query, request.max_iters)
-        return AskResponse(answer=result["answer"], debug=result["debug"])
+        return AskResponse(
+            answer=result["answer"],
+            session_id=request.session_id,
+            debug=result["debug"],
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
