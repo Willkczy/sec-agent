@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # Set to true when running backend services locally without a reverse proxy
     LOCAL_MODE: bool = False
 
+    # Glass-Box reasoning architecture: "two_layer" or "three_layer".
+    # two_layer  = Reasoner + Answerer (default).
+    # three_layer = adds a Verifier with up to 2 retries (slower, stricter).
+    REASONING_ARCHITECTURE: str = "two_layer"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

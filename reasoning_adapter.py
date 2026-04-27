@@ -10,7 +10,6 @@ user-facing answer plus the reasoning trace and metadata.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,8 @@ if str(_REASONING_REPO) not in sys.path:
 
 from model_two_layer import TwoLayerGlassBoxModel, API_DESCRIPTIONS  # noqa: E402
 from model_three_layer import ThreeLayerGlassBoxModel  # noqa: E402
+
+from config import settings  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -101,16 +102,23 @@ _MODEL: TwoLayerGlassBoxModel | None = None
 
 
 def _get_model() -> TwoLayerGlassBoxModel:
-    """Lazy-init the Glass-Box model. Two- or three-layer per env var."""
+    """Lazy-init the Glass-Box model. Two- or three-layer per settings."""
     global _MODEL
     if _MODEL is not None:
         return _MODEL
-    arch = os.getenv("REASONING_ARCHITECTURE", "two_layer").lower()
+    arch = (settings.REASONING_ARCHITECTURE or "two_layer").lower()
     if arch == "three_layer":
         _MODEL = ThreeLayerGlassBoxModel()
     else:
         _MODEL = TwoLayerGlassBoxModel()
     return _MODEL
+
+
+def reset_model_singleton() -> None:
+    """Drop the cached Glass-Box model so the next _get_model() call
+    re-reads settings.REASONING_ARCHITECTURE. Test-only helper."""
+    global _MODEL
+    _MODEL = None
 
 
 # ---------------------------------------------------------------------------

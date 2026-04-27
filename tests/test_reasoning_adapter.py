@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 
+import reasoning_adapter as ra_module
 from tools import ACTIVE_TOOLS
 from reasoning_adapter import (
     ReasoningAdapter,
@@ -244,3 +245,165 @@ class TestAdapterAnswerEmptyInputs:
         ))
         assert out["api_keys"] == []
         assert out["unmapped_tools"] == []
+
+
+# ---------------------------------------------------------------------------
+# Verifier metadata propagation (Phase 3 — three-layer mode)
+# ---------------------------------------------------------------------------
+
+class _StubGlassBoxModel:
+    """Stand-in for TwoLayer / ThreeLayer Glass-Box model.
+
+    The real models do file IO + LLM calls at __init__ and ask(), neither
+    of which we want in unit tests. This stub lets each test pre-program
+    the (answer, trace, verifier_verdict, verifier_retries) returned and
+    appends to history / history_traces in place the way the real model
+    does.
+    """
+
+    def __init__(self, answer="STUB", trace="STUB_TRACE",
+                 verifier_verdict=None, verifier_retries=0):
+        self._answer = answer
+        self._trace = trace
+        self.last_verifier_verdict = verifier_verdict
+        self.last_verifier_retries = verifier_retries
+
+    def ask(self, question, api_keys, history, history_traces, user_outputs):
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": self._answer})
+        history_traces.append({"role": "user", "content": question})
+        history_traces.append({"role": "assistant", "content": self._trace})
+        return self._answer, self._trace
+
+
+@pytest.fixture
+def patched_model(monkeypatch):
+    """Helper to install a stub Glass-Box model and return a setter so each
+    test can swap in its own pre-programmed instance."""
+    def _install(stub):
+        monkeypatch.setattr(ra_module, "_MODEL", stub)
+        return stub
+    yield _install
+    # Clean up so other tests get a fresh singleton resolution.
+    ra_module.reset_model_singleton()
+
+
+class TestVerifierMetadataPropagation:
+    def test_pass_verdict_with_zero_retries_propagates(self, patched_model):
+        patched_model(_StubGlassBoxModel(
+            answer="ANS", trace="TR",
+            verifier_verdict="PASS", verifier_retries=0,
+        ))
+        adapter = ReasoningAdapter()
+        out = asyncio.run(adapter.answer(
+            question="q",
+            api_keys=["asset_breakdown"],
+            user_outputs={"asset_breakdown": {"equity": 60}},
+        ))
+        assert out["answer"] == "ANS"
+        assert out["reasoning_trace"] == "TR"
+        assert out["verifier_verdict"] == "PASS"
+        assert out["verifier_retries"] == 0
+
+    def test_fail_verdict_after_max_retries_still_returns_answer(self, patched_model):
+        # Mirrors ThreeLayerGlassBoxModel.MAX_RETRIES exhaustion: the
+        # answer is still returned, just flagged FAIL with retries=2.
+        patched_model(_StubGlassBoxModel(
+            answer="DEGRADED_ANS", trace="DEGRADED_TR",
+            verifier_verdict="FAIL", verifier_retries=2,
+        ))
+        adapter = ReasoningAdapter()
+        out = asyncio.run(adapter.answer(
+            question="q",
+            api_keys=["asset_breakdown"],
+            user_outputs={"asset_breakdown": {"equity": 60}},
+        ))
+        assert out["answer"] == "DEGRADED_ANS"
+        assert out["verifier_verdict"] == "FAIL"
+        assert out["verifier_retries"] == 2
+
+    def test_pass_after_one_retry_propagates_retry_count(self, patched_model):
+        patched_model(_StubGlassBoxModel(
+            answer="ANS", trace="TR",
+            verifier_verdict="PASS", verifier_retries=1,
+        ))
+        adapter = ReasoningAdapter()
+        out = asyncio.run(adapter.answer(
+            question="q",
+            api_keys=["asset_breakdown"],
+            user_outputs={"asset_breakdown": {"equity": 60}},
+        ))
+        assert out["verifier_verdict"] == "PASS"
+        assert out["verifier_retries"] == 1
+
+    def test_two_layer_model_yields_none_verdict(self, patched_model):
+        # TwoLayerGlassBoxModel does not define last_verifier_*; getattr
+        # in the adapter must fall back to None / 0 — not raise.
+        stub = _StubGlassBoxModel()
+        # Strip the verifier attrs so getattr fallback is exercised.
+        del stub.last_verifier_verdict
+        del stub.last_verifier_retries
+        patched_model(stub)
+        adapter = ReasoningAdapter()
+        out = asyncio.run(adapter.answer(
+            question="q",
+            api_keys=["asset_breakdown"],
+            user_outputs={"asset_breakdown": {"equity": 60}},
+        ))
+        assert out["verifier_verdict"] is None
+        assert out["verifier_retries"] == 0
+
+
+class TestArchitectureSelection:
+    def test_two_layer_is_default(self, monkeypatch):
+        from config import settings as cfg
+        monkeypatch.setattr(cfg, "REASONING_ARCHITECTURE", "two_layer")
+        ra_module.reset_model_singleton()
+        # _get_model would actually instantiate Glass-Box (heavy file IO),
+        # so we patch the constructors to track which one was called.
+        instantiated: list[str] = []
+        monkeypatch.setattr(
+            ra_module, "TwoLayerGlassBoxModel",
+            lambda: instantiated.append("two") or _StubGlassBoxModel(),
+        )
+        monkeypatch.setattr(
+            ra_module, "ThreeLayerGlassBoxModel",
+            lambda: instantiated.append("three") or _StubGlassBoxModel(),
+        )
+        ra_module._get_model()
+        assert instantiated == ["two"]
+        ra_module.reset_model_singleton()
+
+    def test_three_layer_selected_via_settings(self, monkeypatch):
+        from config import settings as cfg
+        monkeypatch.setattr(cfg, "REASONING_ARCHITECTURE", "three_layer")
+        ra_module.reset_model_singleton()
+        instantiated: list[str] = []
+        monkeypatch.setattr(
+            ra_module, "TwoLayerGlassBoxModel",
+            lambda: instantiated.append("two") or _StubGlassBoxModel(),
+        )
+        monkeypatch.setattr(
+            ra_module, "ThreeLayerGlassBoxModel",
+            lambda: instantiated.append("three") or _StubGlassBoxModel(),
+        )
+        ra_module._get_model()
+        assert instantiated == ["three"]
+        ra_module.reset_model_singleton()
+
+    def test_unknown_value_falls_back_to_two_layer(self, monkeypatch):
+        from config import settings as cfg
+        monkeypatch.setattr(cfg, "REASONING_ARCHITECTURE", "garbage")
+        ra_module.reset_model_singleton()
+        instantiated: list[str] = []
+        monkeypatch.setattr(
+            ra_module, "TwoLayerGlassBoxModel",
+            lambda: instantiated.append("two") or _StubGlassBoxModel(),
+        )
+        monkeypatch.setattr(
+            ra_module, "ThreeLayerGlassBoxModel",
+            lambda: instantiated.append("three") or _StubGlassBoxModel(),
+        )
+        ra_module._get_model()
+        assert instantiated == ["two"]
+        ra_module.reset_model_singleton()
