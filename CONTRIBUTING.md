@@ -23,7 +23,11 @@ uv sync
 
 # Copy environment config
 cp .env.example .env
-# Edit .env — at minimum set LLM_BASE_URL, LLM_API_KEY, REASONING_ARCHITECTURE
+# Edit .env — at minimum set LLM_BASE_URL, LLM_API_KEY, REASONING_ARCHITECTURE.
+# For separate local backend services, also set:
+# LOCAL_MODE=true
+# FIN_ENGINE_BASE_URL=http://localhost:8080
+# MODEL_PORTFOLIO_BASE_URL=http://localhost:8081
 
 # Run the server locally
 uv run uvicorn main:app --port 8090 --reload
@@ -47,21 +51,37 @@ Without this, backend services return 500s when fetching user portfolios or secu
 
 ### Running Backend Services
 
-The agent calls backend services at `API_BASE_URL` (default `http://localhost:8089`). You only need to run the service(s) relevant to the tools you're testing.
+You only need to run the service(s) relevant to the tools you're testing.
+
+For deployed backends, point `API_BASE_URL` at the gateway and leave `LOCAL_MODE=false`:
+
+```env
+API_BASE_URL=https://api.askmyfi.dev
+LOCAL_MODE=false
+```
+
+For local backend services on separate ports, use the service-specific base URLs:
+
+```env
+LOCAL_MODE=true
+API_BASE_URL=http://localhost:8089
+FIN_ENGINE_BASE_URL=http://localhost:8080
+MODEL_PORTFOLIO_BASE_URL=http://localhost:8081
+```
+
+Then start the backend services in separate terminals:
 
 ```bash
 cd ../securities-recommendation
 
-# Financial engine (no LLM dependency on the backend side)
-GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json' \
-API_BASE_URL='https://api.askmyfi.dev' \
-uvicorn services.financial_engine.main:app --host 0.0.0.0 --port 8089
+# Financial Engine
+python3 run_service.py fin-engine --env dev --port 8080
 
-# Model portfolio
-GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json' \
-API_BASE_URL='https://api.askmyfi.dev' \
-uvicorn services.model_portfolio.main:app --host 0.0.0.0 --port 8089
+# Model Portfolio
+python3 run_service.py model-portfolio --env dev --port 8081
 ```
+
+`APIClient` routes `/cr/fin-engine/...` to `FIN_ENGINE_BASE_URL` and `/cr/model-portfolio/...` to `MODEL_PORTFOLIO_BASE_URL` when `LOCAL_MODE=true`. `API_BASE_URL` remains the fallback.
 
 Only Financial Engine and Model Portfolio are exercised by `ACTIVE_TOOLS`. SRC and ML services are reserved (see README).
 
@@ -124,7 +144,7 @@ Update reasoning adapter mapping for goal_defaults
 
 ### Adding a New Tool
 
-A new tool needs four touchpoints. The validation tests will fail until all four are in place.
+A new active tool needs five touchpoints. The validation tests will fail until all required pieces are in place.
 
 1. **Add to `TOOLS` in `tools.py`** — description, endpoint, method, parameter schema. This makes it dispatchable.
 
@@ -271,7 +291,7 @@ The `financial_engine` tool dispatches to 10 functions. All use `user_id: 191265
 
 Direct backend call:
 ```bash
-curl -X POST http://localhost:8089/financial_engine \
+curl -X POST http://localhost:8080/financial_engine \
   -H "Content-Type: application/json" \
   -d '{"function": "sector_breakdown", "parameters": {"user_id": "1912650190"}}'
 ```

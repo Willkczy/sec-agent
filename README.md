@@ -11,7 +11,7 @@ This is achieved by splitting the work in two:
 1. **sec-agent** decides which Financial Engine and Model Portfolio APIs to call, executes the HTTP calls, and gathers raw outputs. (This repo.)
 2. **Reasoning_LLM_TiFin** Glass-Box pipeline (Reasoner → Answerer → optional Verifier) takes those outputs plus the matching API descriptions and produces the user-facing answer.
 
-The tool-calling LLM never writes the final answer. The Glass-Box Reasoner does.
+The tool-calling LLM never writes the final answer. The Glass-Box Reasoner produces the trace, and the Glass-Box Answerer writes the user-facing response.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ The tool-calling LLM never writes the final answer. The Glass-Box Reasoner does.
          │ Glass-Box (Reasoning_LLM_TiFin, sibling repo)      │
          │  TwoLayerGlassBoxModel       (default)             │
          │   Reasoner → Answerer                              │
-         │  ThreeLayerGlassBoxModel     (REASONING_ARCH=…)    │
+         │  ThreeLayerGlassBoxModel     (env toggle)          │
          │   Reasoner → Answerer → Verifier (≤2 retries)      │
          └────────────────────────────────────────────────────┘
                               │
@@ -132,9 +132,9 @@ Tracking the [integration plan](../sec_agent_reasoning_llm_integration_plan.md):
 | 3 — Three-layer verification | `REASONING_ARCHITECTURE` toggle, verifier metadata in `debug.reasoning` | **Done** |
 | 4 — Description update pipeline | `update_api_descriptions.py`, JSON validation, GitHub Actions | **Pending** (handed off) |
 
-Unit test coverage: 83 tests across `test_reasoning_adapter`, `test_session_store`, `test_agent_unit`, `test_agent_session`, `test_tools_registry`, `test_api_client`, `test_fastapi_app`.
+Unit test coverage: 87 tests across `test_reasoning_adapter`, `test_session_store`, `test_agent_unit`, `test_agent_session`, `test_tools_registry`, `test_api_client`, `test_fastapi_app`.
 
-Live verification (real GLM-4.7-Flash + backend round-trip) not yet run — same caveat as the original Phase 1 plan.
+Live smoke verification has been run for Financial Engine round-trips through the full flow: user query → tool selection → backend result → Glass-Box reasoning → answer. Model Portfolio still needs local/deployed smoke coverage per endpoint.
 
 ## Project Structure
 
@@ -194,9 +194,41 @@ uv sync
 cp .env.example .env
 # Edit .env — set LLM_BASE_URL, LLM_API_KEY, REASONING_ARCHITECTURE
 
+# If running local backends on separate ports, also set:
+# LOCAL_MODE=true
+# FIN_ENGINE_BASE_URL=http://localhost:8080
+# MODEL_PORTFOLIO_BASE_URL=http://localhost:8081
+
 # Start the agent
 uv run uvicorn main:app --port 8090 --reload
 ```
+
+### Local Backend Services
+
+For deployed backends, set `API_BASE_URL=https://api.askmyfi.dev` and leave `LOCAL_MODE=false`.
+
+For local backends, run each service on its own port and let `APIClient` route by `/cr/<service>` prefix:
+
+```bash
+# Terminal 1 — Financial Engine
+cd ../securities-recommendation
+python3 run_service.py fin-engine --env dev --port 8080
+
+# Terminal 2 — Model Portfolio
+cd ../securities-recommendation
+python3 run_service.py model-portfolio --env dev --port 8081
+```
+
+Use this `.env` shape in `sec-agent`:
+
+```env
+LOCAL_MODE=true
+API_BASE_URL=http://localhost:8089
+FIN_ENGINE_BASE_URL=http://localhost:8080
+MODEL_PORTFOLIO_BASE_URL=http://localhost:8081
+```
+
+With `LOCAL_MODE=true`, `/cr/fin-engine/financial_engine` resolves to `http://localhost:8080/financial_engine`, and `/cr/model-portfolio/get_portfolio_options` resolves to `http://localhost:8081/get_portfolio_options`. `API_BASE_URL` remains the fallback for any service-specific URL that is not set.
 
 ### Test
 
@@ -227,14 +259,16 @@ All config is via `.env` (or system env). See `.env.example` for the full list.
 
 | Variable | Default | Description |
 |---|---|---|
-| `API_BASE_URL` | `http://localhost:8089` | securities-recommendation base URL |
+| `API_BASE_URL` | `http://localhost:8089` | Deployed gateway URL, local proxy URL, or fallback local base URL |
+| `FIN_ENGINE_BASE_URL` | unset | Optional local direct URL for Financial Engine when `LOCAL_MODE=true` |
+| `MODEL_PORTFOLIO_BASE_URL` | unset | Optional local direct URL for Model Portfolio when `LOCAL_MODE=true` |
 | `LLM_BASE_URL` | `http://103.42.51.88:2205/` | OpenAI-compatible LLM endpoint |
 | `LLM_API_KEY` | `anything works` | LLM key (dummy for self-hosted) |
 | `LLM_MODEL` | `orchestrator` | Model name on the LLM endpoint |
 | `LLM_TEMPERATURE` | `0.2` | Tool-calling LLM temperature |
 | `LLM_MAX_TOKENS` | `16384` | Max tokens for tool-calling LLM |
 | `ENABLE_AUTH` | `false` | Enable S2S auth for deployed backends |
-| `LOCAL_MODE` | `false` | Strip `/cr/<service>` prefixes for direct local backends |
+| `LOCAL_MODE` | `false` | Strip `/cr/<service>` prefixes and route to service-specific local URLs when configured |
 | `REASONING_ARCHITECTURE` | `two_layer` | Glass-Box pipeline: `two_layer` or `three_layer` |
 
 ### LLM Provider Notes
@@ -252,7 +286,7 @@ LLM_MODEL=orchestrator
 
 ## Available Tools
 
-The full `TOOLS` registry holds 20 entries; only the 10 with matching Glass-Box descriptions are exposed to the LLM via `ACTIVE_TOOLS` (see `tools.py`). The rest stay in the registry as a reference / placeholder for re-enablement once descriptions exist.
+The full `TOOLS` registry holds 20 entries; only the 10 tools that are currently safe for the Glass-Box integration are exposed to the LLM via `ACTIVE_TOOLS` (see `tools.py`). The rest stay in the registry as reference / placeholder entries for later re-enablement. Most reserved tools need Glass-Box descriptions; `build_stock_portfolio` already has a description but is held back because the backend endpoint is currently broken.
 
 ### Active (10) — Financial Engine + Model Portfolio
 
@@ -274,7 +308,7 @@ The full `TOOLS` registry holds 20 entries; only the 10 with matching Glass-Box 
 These remain in `TOOLS` but are filtered out of the OpenAI schema. Excluded reasons:
 
 - **No Glass-Box description** — Reasoner has nothing to ground against (SRC, ML, `determine_income_sector`).
-- **Backend broken** — `build_stock_portfolio` always returns HTTP 500 (see `Reasoning_LLM_TiFin/CLAUDE.md`).
+- **Backend broken** — `build_stock_portfolio` has a Glass-Box description, but the backend currently returns HTTP 500 for live calls (see `Reasoning_LLM_TiFin/CLAUDE.md`).
 
 | Tool | Service | Reason reserved |
 |---|---|---|
@@ -287,9 +321,9 @@ These remain in `TOOLS` but are filtered out of the OpenAI schema. Excluded reas
 | `can_support` | SRC | No Glass-Box description |
 | `ml_fund_discovery` | ML | No Glass-Box description |
 | `determine_income_sector` | Model Portfolio | Utility, no Glass-Box description |
-| `build_stock_portfolio` | Model Portfolio | Backend always 500s |
+| `build_stock_portfolio` | Model Portfolio | Has Glass-Box description, but backend currently returns HTTP 500 |
 
-To re-enable a reserved tool: add a description to `Reasoning_LLM_TiFin/services/glass_box/data/all_api_descriptions.json`, add a mapping in `reasoning_adapter.py::_resolve_api_key` if the api_key differs, then add the tool name to `ACTIVE_TOOLS`. The `TestDescriptionCoverage` test will fail if any of those steps is missing.
+To re-enable a reserved tool: add a description to `Reasoning_LLM_TiFin/services/glass_box/data/all_api_descriptions.json` when one is missing, add a mapping in `reasoning_adapter.py::_resolve_api_key` if the api_key differs, confirm the backend endpoint works for live calls, then add the tool name to `ACTIVE_TOOLS`. The `TestDescriptionCoverage` test will fail if description coverage or mapping is missing.
 
 ### Financial Engine Functions
 
