@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     # three_layer = adds a Verifier with up to 2 retries (slower, stricter).
     REASONING_ARCHITECTURE: str = "two_layer"
 
+    # Logging — see logging_config.py.
+    # LOG_FORMAT=pretty draws a per-request box with stage indents;
+    # LOG_FORMAT=plain emits one flat line per record (for aggregators).
+    # LOG_USE_UNICODE=false swaps box/marker glyphs for ASCII fallbacks.
+    # LOG_HTTP_BODIES is reserved for PR 2 (DEBUG-gated raw payload logging).
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "pretty"
+    LOG_USE_UNICODE: bool = True
+    LOG_COLOR: bool = False
+    LOG_HTTP_BODIES: bool = False
+
     # The same .env is also used by the imported Glass-Box models, which read
     # vars such as MODEL_PROVIDER, GPU_BASE_URL, and OPENAI_API_KEY directly
     # from os.environ. Ignore those here instead of failing Settings startup.
