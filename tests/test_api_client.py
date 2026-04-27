@@ -51,6 +51,46 @@ class TestAPIClient:
         client2 = APIClient(base_url="http://localhost:8089", enable_auth=False)
         assert client2.base_url == "http://localhost:8089"
 
+    def test_local_mode_routes_fin_engine_to_service_base_url(self):
+        client = APIClient(
+            base_url="http://localhost:9999",
+            local_mode=True,
+            service_base_urls={"fin-engine": "http://localhost:8080/"},
+        )
+
+        assert client._resolve_url("/cr/fin-engine/financial_engine") == (
+            "http://localhost:8080/financial_engine"
+        )
+
+    def test_local_mode_routes_model_portfolio_to_service_base_url(self):
+        client = APIClient(
+            base_url="http://localhost:9999",
+            local_mode=True,
+            service_base_urls={"model-portfolio": "http://localhost:8081/"},
+        )
+
+        assert client._resolve_url("/cr/model-portfolio/get_portfolio_options") == (
+            "http://localhost:8081/get_portfolio_options"
+        )
+
+    def test_local_mode_service_base_url_falls_back_to_default_base_url(self):
+        client = APIClient(base_url="http://localhost:8089", local_mode=True)
+
+        assert client._resolve_url("/cr/fin-engine/financial_engine") == (
+            "http://localhost:8089/financial_engine"
+        )
+
+    def test_non_local_mode_keeps_deployed_service_prefix(self):
+        client = APIClient(
+            base_url="https://api.askmyfi.dev",
+            local_mode=False,
+            service_base_urls={"fin-engine": "http://localhost:8080"},
+        )
+
+        assert client._resolve_url("/cr/fin-engine/financial_engine") == (
+            "https://api.askmyfi.dev/cr/fin-engine/financial_engine"
+        )
+
     def test_successful_post(self):
         client = APIClient(base_url="http://localhost:8089", enable_auth=False)
         expected = {"funds": [{"name": "SBI Large Cap"}]}

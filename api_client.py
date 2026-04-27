@@ -17,11 +17,36 @@ class APIClient:
     # bound on its own port with no proxy in front.
     _SERVICE_PREFIX_RE = re.compile(r"^/cr/(src|fin-engine|model-portfolio|mlr)")
 
-    def __init__(self, base_url: str, enable_auth: bool = False, local_mode: bool = False, timeout: int = 60):
+    def __init__(
+        self,
+        base_url: str,
+        enable_auth: bool = False,
+        local_mode: bool = False,
+        timeout: int = 60,
+        service_base_urls: dict[str, str] | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.enable_auth = enable_auth
         self.local_mode = local_mode
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.service_base_urls = {
+            service: url.rstrip("/")
+            for service, url in (service_base_urls or {}).items()
+            if url
+        }
+
+    def _resolve_url(self, endpoint: str) -> str:
+        """Resolve a tool endpoint to its final URL."""
+        base_url = self.base_url
+
+        if self.local_mode:
+            match = self._SERVICE_PREFIX_RE.match(endpoint)
+            if match:
+                service = match.group(1)
+                base_url = self.service_base_urls.get(service, self.base_url)
+                endpoint = self._SERVICE_PREFIX_RE.sub("", endpoint, count=1)
+
+        return base_url + endpoint
 
     async def _get_auth_headers(self, url: str) -> dict[str, str]:
         """Get S2S authentication headers for deployed environments."""
@@ -46,9 +71,7 @@ class APIClient:
         Returns:
             JSON response as dict, or error dict on failure.
         """
-        if self.local_mode:
-            endpoint = self._SERVICE_PREFIX_RE.sub("", endpoint, count=1)
-        url = self.base_url + endpoint
+        url = self._resolve_url(endpoint)
         headers = {"Content-Type": "application/json"}
         headers.update(await self._get_auth_headers(url))
 

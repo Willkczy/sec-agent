@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # API target (securities-recommendation services)
     API_BASE_URL: str = "http://localhost:8089"
+    FIN_ENGINE_BASE_URL: str | None = None
+    MODEL_PORTFOLIO_BASE_URL: str | None = None
 
     # LLM (self-hosted GPU, OpenAI-compatible)
     LLM_BASE_URL: str = "http://103.42.51.88:2205/"
