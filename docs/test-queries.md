@@ -1,6 +1,8 @@
 # Test Queries Reference
 
-All queries for testing tool selection and API calls. Verified user IDs with portfolio data: `1018083528`, `1733307354`, `1515040473`, `1176384033`, `1724788267`. User `1133023930` has no holdings.
+Queries for testing tool selection and API calls. Verified user IDs with portfolio data include `1912650190`, `1018083528`, `1733307354`, `1515040473`, `1176384033`, `1724788267`. User `1133023930` has no holdings.
+
+Use verified users for live backend smoke tests. Synthetic IDs such as `100`, `200`, or `12345` are routing-only examples unless the target backend environment has matching data.
 
 > **Active vs reserved tools.** Only the 10 Financial Engine + Model Portfolio tools listed in `tools.py::ACTIVE_TOOLS` are exposed to the LLM today. Sections below labeled **Reserved (currently disabled)** still have entries in the `TOOLS` registry but are filtered out of the OpenAI schema — they are kept here for the day they are re-enabled (per the steps in `CONTRIBUTING.md#adding-a-new-tool`). Queries against reserved tools will currently produce an out-of-scope reply from the agent.
 
@@ -25,23 +27,23 @@ All queries go through the `financial_engine` tool with different `function` sub
 
 | Query | Expected function |
 |---|---|
-| Show sector breakdown for user 1912650190 in org 2854263694 | `sector_breakdown` |
-| Check diversification of portfolio for user 1912650190 org 2854263694 | `diversification` |
-| What is the asset breakdown for user 1912650190 in org 2854263694? | `asset_breakdown` |
-| Show market cap distribution for user 1912650190 org 2854263694 | `market_cap_breakdown` |
-| What is my exposure to Reliance in user 1912650190's portfolio in org 2854263694? | `single_holding_exposure` |
+| Show sector breakdown for user 1912650190 | `sector_breakdown` |
+| Check diversification of portfolio for user 1912650190 | `diversification` |
+| What is the asset breakdown for user 1912650190? | `asset_breakdown` |
+| Show market cap distribution for user 1912650190 | `market_cap_breakdown` |
+| What is my exposure to Reliance in user 1912650190's portfolio? | `single_holding_exposure` |
 
 ---
 
-## Model Portfolio Service — ACTIVE (subset)
+## Model Portfolio Service — ACTIVE
 
 The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 
 ### get_portfolio_options
 | Query | Expected Tool |
 |---|---|
-| Build me a portfolio with 50000 SIP investment, medium risk, user ID 100 | `get_portfolio_options` |
-| I want to invest 5 lakhs as a lump sum with high risk. User ID 200. | `get_portfolio_options` |
+| Build me a portfolio with 50000 SIP investment, medium risk, user ID 100 | `get_portfolio_options` (routing-only unless user exists) |
+| I want to invest 5 lakhs as a lump sum with high risk. User ID 200. | `get_portfolio_options` (routing-only unless user exists) |
 | Build a medium risk portfolio for user 1018083528 with 20000 monthly SIP | `get_portfolio_options` |
 
 **Critical routing test:** the last query previously caused the agent to auto-chain into `backtest_portfolio`. After the description enrichment, it should call `get_portfolio_options` ONCE and stop.
@@ -49,8 +51,20 @@ The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 ### get_risk_profile
 | Query | Expected Tool |
 |---|---|
-| What is the risk profile for user 12345? | `get_risk_profile` |
+| What is the risk profile for user 12345? | `get_risk_profile` (routing-only unless user exists) |
 | What is the risk profile for user 1018083528? | `get_risk_profile` |
+
+### portfolio_builder
+| Query | Expected Tool |
+|---|---|
+| Build a custom portfolio for user 1018083528 with a 50000 lump sum after I select my own funds | `portfolio_builder` |
+
+### backtest_portfolio
+| Query | Expected Tool |
+|---|---|
+| I swapped funds in the recommended portfolio for user 1018083528. Re-run the backtest for a 50000 lump sum using my selected funds. | `backtest_portfolio` |
+
+`backtest_portfolio` requires a concrete `selected_funds` payload from a prior portfolio-options response. It should not be auto-called immediately after `get_portfolio_options`, because that response already includes backtest metrics.
 
 ### risk_profile_v2
 | Query | Expected Tool |
@@ -76,7 +90,7 @@ The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 ### stock_to_fund
 | Query | Expected Tool |
 |---|---|
-| Convert stock holdings of user 12345 to mutual fund recommendations | `stock_to_fund` |
+| Convert stock holdings of user 12345 to mutual fund recommendations | `stock_to_fund` (routing-only unless user exists) |
 
 ---
 
@@ -123,7 +137,7 @@ The following Model Portfolio tools are in `ACTIVE_TOOLS`:
 
 ## Model Portfolio Utilities — Reserved (currently disabled)
 
-> Not in `ACTIVE_TOOLS`. `determine_income_sector` is a utility with no Glass-Box description. `build_stock_portfolio` always returns HTTP 500 on the backend (see `Reasoning_LLM_TiFin/CLAUDE.md`).
+> Not in `ACTIVE_TOOLS`. `determine_income_sector` is a utility with no Glass-Box description. `build_stock_portfolio` has a Glass-Box description, but live backend calls currently return HTTP 500 (see `Reasoning_LLM_TiFin/CLAUDE.md`).
 
 ### determine_income_sector
 | Query | Expected Tool |
@@ -229,7 +243,7 @@ curl -s -X POST http://localhost:8090/ask \
 # Financial engine — sector breakdown (active)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show sector breakdown for user 1912650190 in org 2854263694"}'
+  -d '{"query": "Show sector breakdown for user 1912650190"}'
 
 # Goal planning (active)
 curl -s -X POST http://localhost:8090/ask \
