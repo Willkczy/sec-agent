@@ -18,6 +18,7 @@ from models import AskRequest, AskResponse
 from tools import TOOLS, get_openai_tools
 from prompts import SYSTEM_PROMPT
 from api_client import APIClient
+from reasoning_adapter import ReasoningAdapter
 
 load_dotenv()
 
@@ -35,6 +36,8 @@ api_client = APIClient(
     enable_auth=settings.ENABLE_AUTH,
     local_mode=settings.LOCAL_MODE,
 )
+
+reasoning_adapter = ReasoningAdapter()
 
 # Pre-build the OpenAI tools list (static across requests)
 OPENAI_TOOLS = get_openai_tools()
@@ -69,9 +72,15 @@ class Agent:
     repeat until model responds with text (or max_iters reached).
     """
 
-    def __init__(self, llm: AsyncOpenAI, api: APIClient):
+    def __init__(
+        self,
+        llm: AsyncOpenAI,
+        api: APIClient,
+        reasoner: ReasoningAdapter,
+    ):
         self.llm = llm
         self.api = api
+        self.reasoner = reasoner
 
     # -- Execute a single tool call -----------------------------------------
 
@@ -91,9 +100,12 @@ class Agent:
         """
         Full orchestration loop using native function calling.
 
-        The model decides when it's done by returning a text response
-        instead of more tool calls. No explicit ``next_step_required``
-        flag is needed.
+        The tool-calling LLM only chooses + executes tools. Once tool calls
+        finish (model emits text or max_iters reached), the collected
+        tool_results are handed to ReasoningAdapter, which runs the
+        Glass-Box Reasoner+Answerer pipeline to produce the user-facing
+        answer. The tool-calling LLM's text is only used as a fallback
+        when no tools were called (out-of-scope queries).
 
         Returns {"answer": str, "debug": {...}}.
         """
@@ -102,6 +114,7 @@ class Agent:
             {"role": "user", "content": user_query},
         ]
         debug: dict[str, Any] = {"iterations": [], "tool_results": []}
+        last_assistant_text: str = ""
 
         for iteration in range(max_iters):
             resp = await self.llm.chat.completions.create(
@@ -122,6 +135,7 @@ class Agent:
             msg_dict: dict[str, Any] = {"role": "assistant"}
             if assistant_msg.content:
                 msg_dict["content"] = assistant_msg.content
+                last_assistant_text = assistant_msg.content
             if assistant_msg.tool_calls:
                 msg_dict["tool_calls"] = [
                     {
@@ -136,12 +150,9 @@ class Agent:
                 ]
             messages.append(msg_dict)
 
-            # If the model returned text with no tool calls, we're done.
+            # Model is done planning tool calls.
             if not assistant_msg.tool_calls:
-                return {
-                    "answer": assistant_msg.content or "No answer produced.",
-                    "debug": debug,
-                }
+                break
 
             # Execute each tool call and feed results back.
             iter_results = []
@@ -184,21 +195,33 @@ class Agent:
                 ],
             })
 
-        # Exhausted max_iters — ask the model for a final answer without tools
-        # so it synthesizes whatever data it has.
-        resp = await self.llm.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=4096,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": False}
-            },
+        # No tool was ever called: assistant rejected the query as
+        # out-of-scope (or returned text with no plan). Return its text
+        # directly — the reasoner has nothing to ground on.
+        if not debug["tool_results"]:
+            return {
+                "answer": last_assistant_text or (
+                    "No answer produced. This assistant covers Financial "
+                    "Engine and Model Portfolio queries only."
+                ),
+                "debug": debug,
+            }
+
+        # Tool calls collected — hand off to Glass-Box reasoner.
+        reasoning = await self.reasoner.answer(
+            question=user_query,
+            tool_results=debug["tool_results"],
+            history=[],
+            history_traces=[],
         )
-        return {
-            "answer": resp.choices[0].message.content or "Max iterations reached with no answer.",
-            "debug": debug,
+        debug["reasoning"] = {
+            "api_keys": reasoning["api_keys"],
+            "trace": reasoning["reasoning_trace"],
+            "verifier_verdict": reasoning["verifier_verdict"],
+            "verifier_retries": reasoning["verifier_retries"],
+            "unmapped_tools": reasoning["unmapped_tools"],
         }
+        return {"answer": reasoning["answer"], "debug": debug}
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +239,7 @@ async def health():
 async def ask(request: AskRequest):
     """Main endpoint: takes a natural language query, returns an answer."""
     try:
-        agent = Agent(llm=llm_client, api=api_client)
+        agent = Agent(llm=llm_client, api=api_client, reasoner=reasoning_adapter)
         result = await agent.run(request.query, request.max_iters)
         return AskResponse(answer=result["answer"], debug=result["debug"])
     except Exception as e:
