@@ -241,6 +241,79 @@ class TestAgentToolCallingRoutesToReasoner:
         ]
 
 
+class TestAgentUserContext:
+
+    def test_injects_request_user_id_into_financial_engine_params(self):
+        reasoner = _make_stub_reasoner(api_keys=["asset_breakdown"])
+        agent = _build_agent(
+            [
+                _make_tool_call_message([
+                    ("financial_engine",
+                     {"function": "asset_breakdown", "parameters": {}}),
+                ]),
+                _make_text_message("ack"),
+            ],
+            api_results={
+                "fin-engine": {"asset_breakdown": {"equity": 60.0}}
+            },
+            reasoner=reasoner,
+        )
+
+        result = anyio.run(
+            agent.run,
+            "What is my asset breakdown?",
+            3,
+            None,
+            "1912650190",
+        )
+
+        params = result["debug"]["tool_results"][0]["params"]
+        assert params["parameters"]["user_id"] == "1912650190"
+        agent.api.call_tool.assert_awaited_once()
+
+    def test_injects_request_user_id_into_top_level_tool_params(self):
+        reasoner = _make_stub_reasoner(api_keys=["get_risk_profile"])
+        agent = _build_agent(
+            [
+                _make_tool_call_message([("get_risk_profile", {})]),
+                _make_text_message("ack"),
+            ],
+            reasoner=reasoner,
+        )
+
+        result = anyio.run(
+            agent.run,
+            "What's my risk profile?",
+            3,
+            None,
+            "1912650190",
+        )
+
+        params = result["debug"]["tool_results"][0]["params"]
+        assert params["user_id"] == 1912650190
+        agent.api.call_tool.assert_awaited_once()
+
+    def test_missing_user_context_for_user_specific_tool_skips_backend_call(self):
+        agent = _build_agent([
+            _make_tool_call_message([
+                ("financial_engine",
+                 {"function": "asset_breakdown", "parameters": {}}),
+            ]),
+            _make_text_message("ack"),
+        ])
+
+        result = anyio.run(agent.run, "What is my asset breakdown?")
+
+        tool_result = result["debug"]["tool_results"][0]["result"]
+        assert tool_result["error"] == (
+            "Missing user_id for this portfolio-specific query."
+        )
+        assert result["answer"] == (
+            "I need a signed-in user context to answer portfolio-specific questions."
+        )
+        agent.api.call_tool.assert_not_called()
+
+
 class TestAgentMaxIterationsHandsOffToReasoner:
     """When max_iters is exhausted with tool calls still pending, the agent
     no longer makes a forced LLM text call — it hands the collected

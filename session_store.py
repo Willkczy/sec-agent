@@ -38,6 +38,9 @@ class SessionState:
     history_traces: list[dict[str, Any]] = field(default_factory=list)
     last_api_keys: list[str] = field(default_factory=list)
     last_user_outputs: dict[str, Any] = field(default_factory=dict)
+    user_id: str | None = None
+    external_user_id: str | None = None
+    org_id: str | None = None
 
 
 class SessionStore:

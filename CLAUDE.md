@@ -52,9 +52,9 @@ STRICT_MODE=1 uv run pytest tests/ -m llm
 # End-to-end smoke against the live backend + LLM (use the reference user)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show asset breakdown for user 1912650190", "session_id": "smoke-1"}'
+  -d '{"query": "Show my asset breakdown", "user_id": "1912650190", "session_id": "smoke-1"}'
 
-# Follow-up on the same session — should NOT re-fire the tool
+# Follow-up on the same session — should NOT re-fire the tool and can omit user_id
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"query": "How was that calculated?", "session_id": "smoke-1"}'
@@ -68,10 +68,10 @@ tools.py               → TOOLS dict (20 entries) + ACTIVE_TOOLS allowlist (10)
 prompts.py             → SYSTEM_PROMPT for the tool-calling LLM (FE/MP scope only; out-of-scope handler)
 api_client.py          → APIClient class (aiohttp POST to backend microservices)
 config.py              → Settings (env-based, includes REASONING_ARCHITECTURE)
-models.py              → AskRequest / AskResponse Pydantic models (with session_id)
+models.py              → AskRequest / AskResponse Pydantic models (with session_id + user context)
 reasoning_adapter.py   → Bridge to Reasoning_LLM_TiFin: tool->api_key mapping, build_inputs,
                          model singleton, asyncio.to_thread wrap of sync Glass-Box ask()
-session_store.py       → In-memory per-session history + last_api_keys/user_outputs cache + trim
+session_store.py       → In-memory per-session history + last_api_keys/user_outputs + user context cache + trim
                          (Phase 2 prototype; production should swap for Redis/Postgres)
 
 tests/
@@ -94,9 +94,11 @@ tests/
 
 **Data flow:**
 ```
-User query (+ session_id?)
-  → Agent.run loads SessionState, prepends prior history
+User query (+ user_id/external_user_id/org_id + session_id?)
+  → Agent.run loads SessionState, merges request user context, prepends prior history
+  → Hidden context message tells the tool LLM the authenticated user metadata
   → Tool-calling LLM picks FE/MP tool(s)
+  → Missing user/org IDs are backfilled into tool params from trusted context
   → APIClient executes HTTP POST per call
   → Loop until LLM emits text or max_iters
   → ReasoningAdapter.build_inputs(tool_results) → (api_keys, user_outputs, unmapped)
@@ -125,7 +127,9 @@ If no tool was called AND the session has no prior cache, the assistant's text r
 
 ### Agent Orchestration (`main.py`)
 
-- `Agent.run(user_query, max_iters, session_id)` loads SessionState, prepends prior history into tool-LLM messages, runs the tool loop, then routes to the reasoner.
+- `Agent.run(user_query, max_iters, session_id, user_id, external_user_id, org_id)` loads SessionState, merges trusted user context, prepends prior history into tool-LLM messages, runs the tool loop, then routes to the reasoner.
+- User context is injected as a hidden system message and also used deterministically before backend calls. A user can ask "my asset breakdown" while the request/session supplies `user_id`.
+- If a user-specific tool is selected but no `user_id` exists in request or session context, the agent returns a signed-in-context error instead of calling the backend with incomplete params.
 - Three post-loop branches:
   1. Tool calls fired → `build_inputs` → merge with cache → reasoner.
   2. No tool calls + cache exists → reasoner over cached inputs (follow-up).
@@ -135,7 +139,7 @@ If no tool was called AND the session has no prior cache, the assistant's text r
 
 ### Session Store (`session_store.py`)
 
-- Dict-backed, keyed by `session_id`. `SessionState` holds `history`, `history_traces`, `last_api_keys`, `last_user_outputs`.
+- Dict-backed, keyed by `session_id`. `SessionState` holds `history`, `history_traces`, `last_api_keys`, `last_user_outputs`, plus `user_id`, `external_user_id`, and `org_id`.
 - `trim(state)` mutates `state.history[:]` and `state.history_traces[:]` in place — DO NOT replace the list objects, the Reasoner holds references.
 - `max_turns` defaults to 10 (= 20 messages each).
 - Production should replace with Redis / Postgres / app session service (plan §298).
