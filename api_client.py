@@ -3,10 +3,16 @@ Async HTTP client for calling securities-recommendation microservice endpoints.
 """
 
 import json
+import logging
 import re
+import time
 from typing import Any
 
 import aiohttp
+
+from logging_config import log_stage
+
+logger = logging.getLogger("sec_agent.api")
 
 
 class APIClient:
@@ -75,21 +81,41 @@ class APIClient:
         headers = {"Content-Type": "application/json"}
         headers.update(await self._get_auth_headers(url))
 
+        started = time.perf_counter()
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(url, json=params, headers=headers) as resp:
                     body = await resp.text()
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
                     if resp.status >= 400:
+                        log_stage(
+                            logger, "http", "err", indent=2,
+                            status=resp.status, elapsed=f"{elapsed_ms}ms",
+                        )
                         return {
                             "error": f"HTTP {resp.status}",
                             "status_code": resp.status,
                             "detail": body[:2000],
                         }
+                    log_stage(
+                        logger, "http", "ok", indent=2,
+                        status=resp.status, elapsed=f"{elapsed_ms}ms",
+                    )
                     try:
                         return json.loads(body)
                     except json.JSONDecodeError:
                         return {"result": body[:2000]}
         except aiohttp.ClientError as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log_stage(
+                logger, "http", "err", indent=2,
+                error=type(e).__name__, elapsed=f"{elapsed_ms}ms",
+            )
             return {"error": f"Connection error: {str(e)}"}
         except TimeoutError:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log_stage(
+                logger, "http", "err", indent=2,
+                error="timeout", elapsed=f"{elapsed_ms}ms",
+            )
             return {"error": f"Request timed out after {self.timeout.total}s"}

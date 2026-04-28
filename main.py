@@ -27,6 +27,7 @@ from session_store import SessionStore, SessionState
 from logging_config import (
     log_footer,
     log_header,
+    log_stage,
     request_id_var,
     session_id_var,
     setup_logging,
@@ -267,15 +268,41 @@ class Agent:
         """Look up the tool in the registry and make the HTTP call."""
         tool_def = TOOLS.get(tool_name)
         if tool_def is None:
+            log_stage(
+                logger, "tool", "warn", indent=1,
+                name=tool_name, error="unknown_tool",
+            )
             return params, {"error": f"Unknown tool: {tool_name}"}
+
+        log_stage(
+            logger, "tool", "info", indent=1,
+            name=tool_name, endpoint=tool_def["endpoint"],
+        )
 
         params = _inject_user_context(tool_name, params, context)
         missing_error = _missing_user_context_error(tool_name, params)
         if missing_error:
+            log_stage(
+                logger, "tool", "warn", indent=1,
+                name=tool_name, abort="missing_user_context",
+            )
             return params, {"error": missing_error}
 
         params = _coerce_int_fields(params)
-        return params, await self.api.call_tool(tool_def["endpoint"], params)
+        started = time.perf_counter()
+        result = await self.api.call_tool(tool_def["endpoint"], params)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        if isinstance(result, dict) and "error" in result:
+            log_stage(
+                logger, "tool", "err", indent=1,
+                name=tool_name, status="error", elapsed=f"{elapsed_ms}ms",
+            )
+        else:
+            log_stage(
+                logger, "tool", "ok", indent=1,
+                name=tool_name, status="ok", elapsed=f"{elapsed_ms}ms",
+            )
+        return params, result
 
     # -- Main orchestration loop --------------------------------------------
 
@@ -324,6 +351,12 @@ class Agent:
             external_user_id=external_user_id,
             org_id=org_id,
         )
+        log_stage(
+            logger, "session", "info",
+            turns=len(session.history) // 2,
+            cached_keys=len(session.last_api_keys),
+            user_ctx="yes" if user_context.has_any() else "no",
+        )
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -341,6 +374,11 @@ class Agent:
         last_assistant_text: str = ""
 
         for iteration in range(max_iters):
+            log_stage(
+                logger, "tool-llm", "info",
+                **{"iter": f"{iteration + 1}/{max_iters}"},
+                msgs=len(messages),
+            )
             resp = await self.llm.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=messages,
@@ -353,6 +391,18 @@ class Agent:
             )
             choice = resp.choices[0]
             assistant_msg = choice.message
+            if assistant_msg.tool_calls:
+                log_stage(
+                    logger, "tool-llm", "info",
+                    **{"iter": iteration + 1},
+                    tool_calls=len(assistant_msg.tool_calls),
+                )
+            else:
+                log_stage(
+                    logger, "tool-llm", "info",
+                    **{"iter": iteration + 1},
+                    result="text-done",
+                )
 
             # Append the assistant message to the conversation history.
             # We need to serialize it properly for the next API call.
@@ -427,8 +477,17 @@ class Agent:
         new_keys, new_outputs, unmapped = ReasoningAdapter.build_inputs(
             debug["tool_results"]
         )
+        log_stage(
+            logger, "inputs", "info",
+            api_keys=new_keys or "none",
+            unmapped=unmapped or "none",
+        )
 
         if _has_missing_user_context_error(debug["tool_results"]):
+            log_stage(
+                logger, "branch", "warn",
+                path="abort", reason="missing_user_context",
+            )
             return {
                 "answer": MISSING_USER_CONTEXT_ANSWER,
                 "debug": debug,
@@ -437,6 +496,10 @@ class Agent:
         if not debug["tool_results"] and not session.last_api_keys:
             # No new tool call AND no prior session cache — nothing to
             # ground on. Return the assistant's text directly.
+            log_stage(
+                logger, "branch", "info",
+                path="out_of_scope",
+            )
             return {
                 "answer": last_assistant_text or (
                     "No answer produced. This assistant covers Financial "
@@ -452,6 +515,10 @@ class Agent:
             merged_keys = list(session.last_api_keys)
             merged_outputs = dict(session.last_user_outputs)
             debug["reused_session_cache"] = True
+            log_stage(
+                logger, "branch", "info",
+                path="cache_reuse", keys=len(merged_keys),
+            )
         else:
             # New tool calls collected — merge with any prior cache so a
             # follow-up that does fetch fresh data still has access to
@@ -460,6 +527,13 @@ class Agent:
                 dict.fromkeys(list(session.last_api_keys) + new_keys)
             )
             merged_outputs = {**session.last_user_outputs, **new_outputs}
+            log_stage(
+                logger, "branch", "info",
+                path="fresh+merge",
+                new=len(new_keys),
+                cached=len(session.last_api_keys),
+                merged=len(merged_keys),
+            )
 
         reasoning = await self.reasoner.answer(
             question=user_query,
@@ -506,6 +580,13 @@ async def ask(request: AskRequest):
     session_id_var.set(request.session_id or "-")
 
     log_header(logger)
+    log_stage(
+        logger, "receive", "info",
+        query_len=len(request.query),
+        user_ctx="yes" if any([
+            request.user_id, request.external_user_id, request.org_id,
+        ]) else "no",
+    )
     started = time.perf_counter()
 
     try:

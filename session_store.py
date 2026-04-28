@@ -23,9 +23,14 @@ one turn at a time).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
+
+from logging_config import log_stage
+
+logger = logging.getLogger("sec_agent.session")
 
 
 DEFAULT_MAX_TURNS = 10
@@ -62,6 +67,11 @@ class SessionStore:
             if state is None:
                 state = SessionState()
                 self._sessions[session_id] = state
+                log_stage(
+                    logger, "session", "info",
+                    level=logging.DEBUG,
+                    event="created", sid=session_id,
+                )
             return state
 
     def trim(self, state: SessionState) -> None:
@@ -72,10 +82,19 @@ class SessionStore:
         unbounded prompt growth.
         """
         keep = self._max_turns * 2
+        trimmed = False
         if len(state.history) > keep:
             state.history[:] = state.history[-keep:]
+            trimmed = True
         if len(state.history_traces) > keep:
             state.history_traces[:] = state.history_traces[-keep:]
+            trimmed = True
+        if trimmed:
+            log_stage(
+                logger, "session", "info",
+                level=logging.DEBUG,
+                event="trimmed", kept=keep,
+            )
 
     def reset(self, session_id: str) -> None:
         """Drop all state for a session_id (test helper / explicit reset)."""

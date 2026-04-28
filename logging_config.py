@@ -57,13 +57,20 @@ _TS_PAD = " " * 14
 
 
 # ---------------------------------------------------------------------------
-# Filter — injects request_id / session_id from ContextVars onto every record
+# Record factory — stamps request_id / session_id from ContextVars onto every
+# record at creation time. Using a factory (instead of a Filter on root or a
+# specific handler) means non-stream consumers like pytest's caplog also see
+# the correlation IDs without needing per-handler wiring.
 # ---------------------------------------------------------------------------
-class RequestContextFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = request_id_var.get()
-        record.session_id = session_id_var.get()
-        return True
+_BASE_RECORD_FACTORY: Any = None
+
+
+def _record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+    base = _BASE_RECORD_FACTORY or logging.getLogRecordFactory()
+    record = base(*args, **kwargs)
+    record.request_id = request_id_var.get()
+    record.session_id = session_id_var.get()
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -162,13 +169,16 @@ def setup_logging(
     use_unicode: bool = True,
 ) -> None:
     """Configure the root logger. Repeat calls are no-ops."""
-    global _CONFIGURED
+    global _CONFIGURED, _BASE_RECORD_FACTORY
     if _CONFIGURED:
         return
 
+    # Capture whatever factory is in place, then chain ours on top.
+    _BASE_RECORD_FACTORY = logging.getLogRecordFactory()
+    logging.setLogRecordFactory(_record_factory)
+
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(_select_formatter(fmt, use_unicode))
-    handler.addFilter(RequestContextFilter())
 
     root = logging.getLogger()
     root.handlers.clear()
@@ -183,9 +193,16 @@ def setup_logging(
 
 
 def reset_logging_for_tests() -> None:
-    """Test helper — drop the configured flag so setup_logging() reruns."""
-    global _CONFIGURED
+    """Test helper — drop the configured flag so setup_logging() reruns.
+
+    Also restores the original LogRecordFactory so re-running setup does not
+    chain our factory on top of itself (which would infinite-loop).
+    """
+    global _CONFIGURED, _BASE_RECORD_FACTORY
     _CONFIGURED = False
+    if _BASE_RECORD_FACTORY is not None:
+        logging.setLogRecordFactory(_BASE_RECORD_FACTORY)
+        _BASE_RECORD_FACTORY = None
 
 
 # ---------------------------------------------------------------------------
@@ -207,10 +224,12 @@ def log_stage(
     phase: str,
     marker: str = "info",
     indent: int = 0,
+    level: int = logging.INFO,
     **kv: Any,
 ) -> None:
-    """Emit one stage body line."""
-    logger.info(
+    """Emit one stage body line. Pass level=logging.DEBUG for sub-INFO lines."""
+    logger.log(
+        level,
         "",
         extra={
             "phase": phase,
