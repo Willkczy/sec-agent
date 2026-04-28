@@ -169,8 +169,8 @@ sec-agent/
 │   ├── test_tool_selection_src.py            # SRC reference suite (tools currently reserved)
 │   └── test_tool_selection_ml.py             # ML reference suite (tool currently reserved)
 ├── docs/
-│   ├── demo-queries.md    # Glass-Box-aligned demo queries
-│   └── test-queries.md    # Per-tool query reference
+│   ├── demo-queries.md    # Pointer to the maintained query reference
+│   └── test-queries.md    # Source of truth for fixture-aligned smoke queries
 ├── pyproject.toml
 └── .env.example
 ```

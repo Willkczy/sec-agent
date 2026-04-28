@@ -1,271 +1,154 @@
 # Test Queries Reference
 
-Queries for testing tool selection and API calls. Verified user IDs with portfolio data include `1912650190`, `1018083528`, `1733307354`, `1515040473`, `1176384033`, `1724788267`. User `1133023930` has no holdings.
+This file is the source of truth for live `/ask` smoke-test queries. Query wording is based on `../Reasoning_LLM_TiFin/example_data/`, but adjusted where needed so the live agent has enough inputs to call the backend APIs.
 
-Use verified users for live backend smoke tests. For realistic agent testing, pass the ID as request context (`"user_id": "1912650190"`) and keep the query natural, e.g. `"Show my sector breakdown"`. Synthetic IDs such as `100`, `200`, or `12345` are routing-only examples unless the target backend environment has matching data.
+Use a fresh `session_id` per test pair. For follow-ups, omit `user_id`; the agent should reuse the prior session cache and trusted context.
 
-> **Active vs reserved tools.** Only the 10 Financial Engine + Model Portfolio tools listed in `tools.py::ACTIVE_TOOLS` are exposed to the LLM today. Sections below labeled **Reserved (currently disabled)** still have entries in the `TOOLS` registry but are filtered out of the OpenAI schema — they are kept here for the day they are re-enabled (per the steps in `CONTRIBUTING.md#adding-a-new-tool`). Queries against reserved tools will currently produce an out-of-scope reply from the agent.
+## Quick Checks
 
-## Quick curl template
+Expected response fields:
+
+- First turn: `debug.tool_results` contains the expected tool calls.
+- Follow-up: `debug.tool_results` is usually empty and `debug.reused_session_cache` is `true`.
+- Two-layer reasoning: `debug.reasoning.verifier_verdict` is `null`.
+- Three-layer reasoning: `debug.reasoning.verifier_verdict` is populated.
+
+## Curl Templates
+
+User-specific:
 
 ```bash
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "<QUERY>", "user_id": "1912650190"}' | python3 -m json.tool
-
-# With a session_id to enable follow-up continuity and stored user context
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "<QUERY>", "user_id": "1912650190", "session_id": "smoke-1"}' | python3 -m json.tool
+  -d '{"query":"<QUERY>","user_id":"1912650190","session_id":"<SESSION>"}' \
+  | python3 -m json.tool
 ```
 
----
+Non-user:
 
-## Financial Engine (Portfolio Analytics) — ACTIVE
+```bash
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query":"<QUERY>","session_id":"<SESSION>"}' \
+  | python3 -m json.tool
+```
 
-All queries go through the `financial_engine` tool with different `function` sub-parameters.
+Follow-up:
 
-| Query | Expected function |
-|---|---|
-| Show my sector breakdown | `sector_breakdown` |
-| Check diversification of my portfolio | `diversification` |
-| What is my asset breakdown? | `asset_breakdown` |
-| Show my market cap distribution | `market_cap_breakdown` |
-| What is my exposure to Reliance? | `single_holding_exposure` |
+```bash
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query":"<FOLLOW_UP>","session_id":"<SESSION>"}' \
+  | python3 -m json.tool
+```
 
----
+## Financial Engine Smoke Pairs
 
-## Model Portfolio Service — ACTIVE
+All require request context `user_id: "1912650190"` on turn 1.
 
-The following Model Portfolio tools are in `ACTIVE_TOOLS`:
+| Session | Turn 1 query | Turn 2 follow-up | Expected key(s) |
+|---|---|---|---|
+| `smoke-fe-asset` | `How is my money split across different asset types?` | `How did you calculate that?` | `asset_breakdown` |
+| `smoke-fe-div` | `How diversified is my portfolio?` | `Why did it say N/A instead of High, Medium, or Low?` | `diversification` |
+| `smoke-fe-sector` | `What are my top sectors?` | `How were those top sectors determined?` | `sector_breakdown` |
+| `smoke-fe-cap` | `How is my portfolio split between large, mid, and small cap stocks?` | `How do you know Mid Cap is dominant?` | `market_cap_breakdown` |
+| `smoke-fe-hdfc` | `What is my total exposure to HDFC Bank Ltd.?` | `How was that exposure figure calculated?` | `single_holding_exposure` |
+| `smoke-fe-topstocks` | `Show me the top 5 individual stock exposures in my portfolio.` | `How did you rank those stocks?` | `total_stock_exposure` |
+| `smoke-fe-amc` | `Which AMC am I most concentrated in?` | `How did you determine the AMC concentration?` | `amc_preference` |
+| `smoke-fe-sector-pref` | `Which sectors am I overweight and underweight in versus the benchmark?` | `How were those active share numbers calculated?` | `sector_preference` |
+| `smoke-fe-theme` | `Do I have a thematic investment focus?` | `How did you infer that there is a thematic focus?` | `theme_preference` |
+| `smoke-fe-factor` | `Do I have any strong factor tilt?` | `Why was it classified as factor-neutral?` | `factor_preference` |
 
-### get_portfolio_options
-| Query | Expected Tool |
-|---|---|
-| Build me a portfolio with 50000 SIP investment, medium risk | `get_portfolio_options` |
-| I want to invest 5 lakhs as a lump sum with high risk | `get_portfolio_options` |
-| Build a medium risk portfolio with 20000 monthly SIP | `get_portfolio_options` |
+Good multi-tool FE checks:
 
-**Critical routing test:** the last query previously caused the agent to auto-chain into `backtest_portfolio`. After the description enrichment, it should call `get_portfolio_options` ONCE and stop.
+| Session | Turn 1 query | Turn 2 follow-up | Expected key(s) |
+|---|---|---|---|
+| `smoke-fe-midcap-equity` | `How much of my total portfolio is in equity mid caps?` | `How did you calculate that combined number?` | `asset_breakdown` + `market_cap_breakdown` |
+| `smoke-fe-aggressive` | `Would you describe this portfolio as aggressive rather than defensive?` | `How did you synthesize that view from the outputs?` | `asset_breakdown` + `market_cap_breakdown` + `sector_preference` + `factor_preference` |
 
-### get_risk_profile
-| Query | Expected Tool |
-|---|---|
-| What is my risk profile? | `get_risk_profile` |
+## Model Portfolio User-Specific Smoke Pairs
 
-### portfolio_builder
-| Query | Expected Tool |
-|---|---|
-| Build a custom portfolio with a 50000 lump sum after I select my own funds | `portfolio_builder` |
+All require request context `user_id: "1912650190"` on turn 1.
 
-### backtest_portfolio
-| Query | Expected Tool |
-|---|---|
-| I swapped funds in my recommended portfolio. Re-run the backtest for a 50000 lump sum using my selected funds. | `backtest_portfolio` |
+| Session | Turn 1 query | Turn 2 follow-up | Expected key(s) |
+|---|---|---|---|
+| `smoke-mpu-risk` | `What is my stored overall risk profile?` | `How was that risk label determined?` | `get_risk_profile` |
+| `smoke-mpu-lump` | `What portfolio is recommended for me if I invest 50000 as a one-time lump sum?` | `How did it calculate those fund amounts?` | `get_portfolio_options_lumpsum` |
+| `smoke-mpu-sip` | `What mutual fund portfolio would you recommend for me if I invest 10000 every month through an SIP?` | `How did you decide the split between those funds and calculate the monthly SIP amount for each one?` | `get_portfolio_options_sip` |
+| `smoke-mpu-stockfund` | `Are there mutual fund alternatives that could replace my current stock holdings, and how does my exposure compare?` | `How did it derive that recommendation setup?` | `stock_to_fund` |
+| `smoke-mpu-risk-vs-lump` | `Is the recommended portfolio style for a 50000 lump sum consistent with my stored risk profile?` | `Why is that a reasonable connection to make?` | `get_risk_profile` + `get_portfolio_options_lumpsum` |
 
-`backtest_portfolio` requires a concrete `selected_funds` payload from a prior portfolio-options response. It should not be auto-called immediately after `get_portfolio_options`, because that response already includes backtest metrics.
+Workflow-dependent tools:
 
-### risk_profile_v2
-| Query | Expected Tool |
-|---|---|
-| Assess risk for a 30 year old earning 12 lakhs annually, medium term horizon, willing to lose 20%, pin code 400001 | `risk_profile_v2` |
+- `portfolio_builder` can be smoked with `What does the custom-assembled portfolio look like for a 50000 lump sum?`, but it is semantically intended for user-selected funds.
+- `backtest_portfolio` requires `selected_funds` in the tool arguments. Do not expect a clean one-shot natural-language test unless you include the selected fund IDs explicitly.
 
-### single_goal_optimizer
-| Query | Expected Tool |
-|---|---|
-| I want to save 1 crore in 20 years with 10000 monthly SIP for retirement | `single_goal_optimizer` |
-| Plan for buying a house worth 50 lakhs in 10 years, I can invest 15000 per month | `single_goal_optimizer` |
+## Model Portfolio Non-User Smoke Pairs
 
-### multi_goal_optimizer
-| Query | Expected Tool |
-|---|---|
-| I have 50 lakhs and 20000 monthly SIP. Optimize across retirement in 20 years (critical, 1 crore) and house in 5 years (important, 30 lakhs) | `multi_goal_optimizer` |
+Do not send `user_id` for these. The live query must include the inputs; fixture-style wording like "this onboarding-style assessment" is not enough by itself.
 
-### goal_defaults
-| Query | Expected Tool |
-|---|---|
-| What SIP amount should I target for a 50 lakh goal in 15 years? | `goal_defaults` |
+| Session | Turn 1 query | Turn 2 follow-up | Expected key(s) |
+|---|---|---|---|
+| `smoke-mpnu-risk` | `Assess risk for a 30 year old earning 12 lakhs annually, long term horizon, willing to lose 20%, pin code 400001.` | `How was that recommendation determined?` | `risk_profile_v2` |
+| `smoke-mpnu-retire` | `For retirement, if I invest 10000 monthly SIP toward a 1 crore goal over 20 years, what allocation does the optimizer recommend?` | `How did it arrive at that recommendation?` | `single_goal_optimizer` |
+| `smoke-mpnu-multigoal` | `I have 5 lakh corpus and 20000 monthly SIP. Split it across a critical house purchase goal of 50 lakh in 5 years and an important retirement goal of 2 crore in 30 years.` | `How was that split calculated?` | `multi_goal_optimizer` |
+| `smoke-mpnu-defaults` | `What is the suggested default monthly SIP for reaching a 1 crore retirement corpus over 30 years?` | `How is that default generated?` | `goal_defaults` |
+| `smoke-mpnu-compare-single` | `Which single-goal plan looks more achievable: retirement with 10000 monthly SIP toward 1 crore in 20 years, or a house purchase with 15000 monthly SIP toward 50 lakh in 5 years?` | `How did you compare those two results?` | `single_goal_optimizer` called twice |
+| `smoke-mpnu-compare-defaults` | `Which goal requires a larger default monthly SIP: reaching a 1 crore retirement corpus over 30 years, or saving 50 lakh for a house purchase over 5 years?` | `How did you calculate that comparison?` | `goal_defaults` called twice |
+| `smoke-mpnu-risk-vs-goal` | `For a 30 year old earning 12 lakhs, pin code 400001, long term horizon, willing to lose 20%, does the onboarding risk assessment look more aggressive than a retirement optimizer for 10000 monthly SIP toward 1 crore in 20 years?` | `Why can those two outputs disagree?` | `risk_profile_v2` + `single_goal_optimizer` |
+| `smoke-mpnu-house-struggle` | `I have 5 lakh corpus and 20000 monthly SIP across a critical 50 lakh house goal in 5 years and an important 2 crore retirement goal in 30 years. Why is the house goal struggling? Also compare the house goal against its standalone default and single-goal optimizer result.` | `How did you infer that?` | `multi_goal_optimizer` + `goal_defaults` + `single_goal_optimizer` |
 
-### stock_to_fund
-| Query | Expected Tool |
-|---|---|
-| Convert my stock holdings to mutual fund recommendations | `stock_to_fund` |
+Unavailable fixture sessions:
 
----
+- `data-v0-mp_nonuser_split.json` session 5 uses `build_stock_portfolio`, which is reserved because the backend currently returns HTTP 500.
+- `data-v0-mp_nonuser_split.json` session 6 uses `sip_timeseries`, which is not exposed as a sec-agent tool.
 
-## SRC Service (Fund Search & Recommendations) — Reserved (currently disabled)
+## Disambiguation Tests
 
-> Not in `ACTIVE_TOOLS`. No Glass-Box description — Reasoner has nothing to ground against. Queries here currently produce the out-of-scope reply. Re-enable by adding descriptions to `Reasoning_LLM_TiFin/services/glass_box/data/all_api_descriptions.json`, mappings in `reasoning_adapter.py`, and the tool name to `ACTIVE_TOOLS`.
-
-### search_funds
-| Query | Expected Tool |
-|---|---|
-| Show me the best large cap mutual funds | `search_funds` |
-| Low expense ratio mid cap funds with high returns | `search_funds` |
-| Show SBI large cap funds | `search_funds` |
-| Top performing mid cap funds this year | `search_funds` |
-
-### get_fund_peers
-| Query | Expected Tool |
-|---|---|
-| Compare fund with ISIN INF209K01YY8 against its peers | `get_fund_peers` |
-| Show peers for fund with internal security ID 130685 in org 2854263694 | `get_fund_peers` |
-
-### swap_recommendations
-| Query | Expected Tool |
-|---|---|
-| What are better alternatives to fund with ID 130685 based on returns? | `swap_recommendations` |
-| Find cheaper alternatives for fund ID 130685 | `swap_recommendations` |
-
-### portfolio_swap_recommendations
-| Query | Expected Tool |
-|---|---|
-| Analyze my full portfolio and suggest swaps | `portfolio_swap_recommendations` |
-
-### stock_research_data
-| Query | Expected Tool |
-|---|---|
-| Get stock research data for ISIN INE002A01018 | `stock_research_data` |
-
-### can_support
-| Query | Expected Tool |
-|---|---|
-| Can the system handle a query about cryptocurrency trading? | `can_support` |
-
----
-
-## Model Portfolio Utilities — Reserved (currently disabled)
-
-> Not in `ACTIVE_TOOLS`. `determine_income_sector` is a utility with no Glass-Box description. `build_stock_portfolio` has a Glass-Box description, but live backend calls currently return HTTP 500 (see `Reasoning_LLM_TiFin/CLAUDE.md`).
-
-### determine_income_sector
-| Query | Expected Tool |
-|---|---|
-| Classify income sector for a household where one person is a software engineer at an IT company and spouse is a doctor | `determine_income_sector` |
-
-### build_stock_portfolio
-| Query | Expected Tool |
-|---|---|
-| Build me a large cap tech portfolio with up to 10 stocks | `build_stock_portfolio` |
-| Construct a mid cap healthcare stock portfolio, max 8 positions | `build_stock_portfolio` |
-
-**Params the LLM should extract:** `query` (NL description), and optionally `max_stocks`, `sectors`, `market_caps`. The endpoint takes an NL description and does its own sector/cap parsing — do NOT pass an explicit `stocks[{symbol, weight}]` list.
-
----
-
-## ML Recommendations — Reserved (currently disabled)
-
-> Not in `ACTIVE_TOOLS`. No Glass-Box description.
-
-### ml_fund_discovery
-| Query | Expected Tool |
-|---|---|
-| Show my ML-based personalized fund recommendations | `ml_fund_discovery` |
-| What funds would similar investors recommend for me? | `ml_fund_discovery` |
-| Give me collaborative filtering fund suggestions | `ml_fund_discovery` |
-
----
-
-## Multi-Step / Ambiguous Queries — ACTIVE
-
-These may correctly trigger multiple tools or have multiple valid tool selections. All examples below use only active tools.
-
-| Query | Acceptable Tools |
-|---|---|
-| Determine my risk profile and build a portfolio with 50000 SIP. | `get_portfolio_options`, `get_risk_profile`, or both |
-| Show my diversification and break it down by sector | `financial_engine` (called twice with different `function` values) |
-| What's my asset breakdown, and is the portfolio concentrated? | `financial_engine` (`asset_breakdown` + `diversification`) |
-
----
-
-## Disambiguation Tests (should NOT trigger wrong tool) — ACTIVE
-
-These verify the description enrichment prevents common mis-routing.
-
-| Query | Should Call | Should NOT Call |
+| Query | Should call | Should not call |
 |---|---|---|
-| Build a medium risk portfolio with 20000 monthly SIP | `get_portfolio_options` | `backtest_portfolio` (response already has backtest) |
-| What is my risk profile? | `get_risk_profile` | `risk_profile_v2` (that's for onboarding) |
-| Build a portfolio with 50000 SIP | `get_portfolio_options` | `get_risk_profile` (auto-fetched internally) |
-| I have one goal: save 1 crore in 20 years | `single_goal_optimizer` | `multi_goal_optimizer` (single goal) |
+| `What is my stored overall risk profile?` with `user_id` | `get_risk_profile` | `risk_profile_v2` |
+| `Assess risk for a 30 year old earning 12 lakhs annually, long term horizon, willing to lose 20%, pin code 400001.` | `risk_profile_v2` | `get_risk_profile` |
+| `Build a medium risk portfolio with 20000 monthly SIP.` with `user_id` | `get_portfolio_options` | `backtest_portfolio` |
+| `For retirement, if I invest 10000 monthly SIP toward a 1 crore goal over 20 years, what allocation does the optimizer recommend?` | `single_goal_optimizer` | `multi_goal_optimizer` |
+| `I have 5 lakh corpus and 20000 monthly SIP. Split it across a house goal and a retirement goal.` | `multi_goal_optimizer` | `single_goal_optimizer` only |
 
----
+## Missing Context Tests
 
-## Follow-up continuity smoke (Phase 2)
-
-Verifies `session_id` follow-ups reuse the prior cache without re-firing tools. The second call should return `debug.tool_results: []` and `debug.reused_session_cache: true`, with the answer grounded in the prior turn's reasoning trace.
-
-```bash
-# Turn 1 — fires financial_engine
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Show my asset breakdown", "user_id": "1912650190", "session_id": "smoke-followup"}' \
-  | python3 -m json.tool
-
-# Turn 2 — same session, no new tool call expected, user_id can be omitted
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "How was that calculated?", "session_id": "smoke-followup"}' \
-  | python3 -m json.tool
-```
-
----
-
-## Missing user context smoke
-
-Verifies user-specific queries fail cleanly when neither the request nor session supplies `user_id`.
+User-specific query without request or session user context:
 
 ```bash
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Show my asset breakdown"}' \
+  -d '{"query":"How is my money split across different asset types?"}' \
   | python3 -m json.tool
 ```
 
 Expected answer: `I need a signed-in user context to answer portfolio-specific questions.`
 
----
-
-## Out-of-scope smoke
-
-Verifies the no-tool-no-cache path returns the assistant's text directly without invoking the Reasoner.
+Non-user fixture-style query without inputs:
 
 ```bash
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is the weather today?"}' \
+  -d '{"query":"What risk profile does this onboarding-style risk assessment recommend?","session_id":"bad-risk-v2"}' \
   | python3 -m json.tool
 ```
 
-Expected: `debug.reasoning` is absent; the answer is the tool-LLM's plain text reply.
+Expected behavior: the agent should ask for missing onboarding inputs or fail to call `risk_profile_v2`. This is not a valid live smoke query because `session_id` does not load fixture data.
 
----
-
-## Full curl examples for live testing
+## Full Example
 
 ```bash
-# Risk profile lookup (active)
+# Turn 1
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is my risk profile?", "user_id": "1018083528"}'
+  -d '{"query":"For a 30 year old earning 12 lakhs, pin code 400001, long term horizon, willing to lose 20%, does the onboarding risk assessment look more aggressive than a retirement optimizer for 10000 monthly SIP toward 1 crore in 20 years?","session_id":"smoke-mpnu-risk-vs-goal"}' \
+  | python3 -m json.tool
 
-# Build portfolio (the critical auto-chain test)
+# Turn 2
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"query": "Build a medium risk portfolio with 20000 monthly SIP", "user_id": "1018083528"}'
-
-# Financial engine — sector breakdown (active)
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Show my sector breakdown", "user_id": "1912650190"}'
-
-# Goal planning (active)
-curl -s -X POST http://localhost:8090/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "I want to save 1 crore in 20 years with 10000 monthly SIP for retirement"}'
-
-# Reserved (currently returns out-of-scope reply):
-# curl -s -X POST http://localhost:8090/ask \
-#   -H "Content-Type: application/json" \
-#   -d '{"query": "Show me the best large cap mutual funds"}'
+  -d '{"query":"Why can those two outputs disagree?","session_id":"smoke-mpnu-risk-vs-goal"}' \
+  | python3 -m json.tool
 ```
