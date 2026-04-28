@@ -10,7 +10,9 @@ user-facing answer plus the reasoning trace and metadata.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,9 @@ from model_two_layer import TwoLayerGlassBoxModel, API_DESCRIPTIONS  # noqa: E40
 from model_three_layer import ThreeLayerGlassBoxModel  # noqa: E402
 
 from config import settings  # noqa: E402
+from logging_config import log_stage  # noqa: E402
+
+logger = logging.getLogger("sec_agent.reasoning")
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +116,7 @@ def _get_model() -> TwoLayerGlassBoxModel:
         _MODEL = ThreeLayerGlassBoxModel()
     else:
         _MODEL = TwoLayerGlassBoxModel()
+    log_stage(logger, "glass-box", "info", arch=arch, init="ok")
     return _MODEL
 
 
@@ -214,6 +220,10 @@ class ReasoningAdapter:
         unmapped_tools = unmapped_tools if unmapped_tools is not None else []
 
         if not api_keys:
+            log_stage(
+                logger, "reasoning", "warn",
+                skipped="no_api_keys",
+            )
             return {
                 "answer": OUT_OF_SCOPE_MESSAGE,
                 "reasoning_trace": "",
@@ -224,6 +234,15 @@ class ReasoningAdapter:
             }
 
         model = _get_model()
+        arch = (settings.REASONING_ARCHITECTURE or "two_layer").lower()
+        log_stage(
+            logger, "reasoning", "prog",
+            arch=arch,
+            api_keys=len(api_keys),
+            user_outputs=len(user_outputs),
+            hist_turns=len(history) // 2,
+        )
+        started = time.perf_counter()
         answer, trace = await asyncio.to_thread(
             model.ask,
             question,
@@ -232,9 +251,17 @@ class ReasoningAdapter:
             history_traces,
             user_outputs,
         )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
 
         verifier_verdict = getattr(model, "last_verifier_verdict", None)
         verifier_retries = getattr(model, "last_verifier_retries", 0)
+        log_stage(
+            logger, "reasoning", "ok",
+            verdict=verifier_verdict if verifier_verdict is not None else "-",
+            retries=verifier_retries,
+            answer_len=len(answer),
+            elapsed=f"{elapsed_ms}ms",
+        )
 
         return {
             "answer": answer,
