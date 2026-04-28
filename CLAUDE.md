@@ -149,7 +149,8 @@ If no tool was called AND the session has no prior cache, the assistant's text r
 - All settings via `.env` (loaded by pydantic-settings).
 - `extra=ignore` in `Settings.model_config` so the same `.env` can hold Glass-Box vars (`MODEL_PROVIDER`, `GPU_BASE_URL`, etc.) without breaking sec-agent startup.
 - `ENABLE_AUTH=false` for local dev, `true` for deployed services.
-- `LOCAL_MODE=true` strips `/cr/<service>` prefixes and can route local services by prefix:
+- Default dev backend access is `API_BASE_URL=https://api.askmyfi.dev` with `LOCAL_MODE=false` while connected to the company VPN.
+- `LOCAL_MODE=true` is only for debugging local backend services. It strips `/cr/<service>` prefixes and can route local services by prefix:
   - `FIN_ENGINE_BASE_URL=http://localhost:8080`
   - `MODEL_PORTFOLIO_BASE_URL=http://localhost:8081`
   - `API_BASE_URL` remains the deployed gateway/local proxy/fallback base URL.
@@ -158,19 +159,19 @@ If no tool was called AND the session has no prior cache, the assistant's text r
 
 ## Dependencies on Other Repos
 
-- **`securities-recommendation`** (sibling) — backend microservices the agent calls over HTTP. No code import.
+- **`securities-recommendation`** — backend microservices the agent calls over HTTP. Default development uses the deployed dev gateway over VPN; the sibling checkout is only needed when debugging local backends. No code import.
 - **`Reasoning_LLM_TiFin`** (sibling) — Glass-Box reasoner. Imported via `sys.path` shim in `reasoning_adapter.py`. The repo MUST exist at `../Reasoning_LLM_TiFin` or `reasoning_adapter` import will fail. sec-agent uses the model classes directly (`TwoLayerGlassBoxModel`, `ThreeLayerGlassBoxModel`), supplies live tool outputs (not the bundled `filtered_outputs_*.json`), and owns the per-session history that the model mutates in place.
 
 ## Upstream API Services
 
-The agent calls these services (must be running locally or reachable through a deployed gateway):
+The agent calls these services through the deployed dev gateway by default (`API_BASE_URL=https://api.askmyfi.dev`, VPN required). Local direct URLs are an override for backend debugging:
 
 | Service | Direct local URL with `LOCAL_MODE=true` | Deployed URL |
 |---|---|---|
-| Financial Engine | `FIN_ENGINE_BASE_URL=http://localhost:8080` | `https://api.askmyfi.com/cr/fin-engine/` |
-| Model Portfolio | `MODEL_PORTFOLIO_BASE_URL=http://localhost:8081` | `https://api.askmyfi.com/cr/model-portfolio/` |
-| SRC | fallback `API_BASE_URL` only today | `https://api.askmyfi.com/cr/src/` (reserved) |
-| ML Recommendations | fallback `API_BASE_URL` only today | `https://api.askmyfi.com/cr/mlr/` (reserved) |
+| Financial Engine | `FIN_ENGINE_BASE_URL=http://localhost:8080` | `https://api.askmyfi.dev/cr/fin-engine/` |
+| Model Portfolio | `MODEL_PORTFOLIO_BASE_URL=http://localhost:8081` | `https://api.askmyfi.dev/cr/model-portfolio/` |
+| SRC | fallback `API_BASE_URL` only today | `https://api.askmyfi.dev/cr/src/` (reserved) |
+| ML Recommendations | fallback `API_BASE_URL` only today | `https://api.askmyfi.dev/cr/mlr/` (reserved) |
 
 SRC and ML are listed because their tool entries still exist in `TOOLS`, but `ACTIVE_TOOLS` does not expose them to the LLM today (no Glass-Box descriptions).
 
@@ -183,9 +184,9 @@ Two separate LLMs are involved:
 
 The agent's LLM is separate from the backend services' own LLM dependencies. Some SRC and Model Portfolio endpoints call the self-hosted GPU for NER parsing — those won't work without VPN access regardless of which LLM the agent uses. Financial Engine and ML Recommendations have no backend-side LLM dependencies.
 
-## GCP Credentials
+## Local Backend GCP Credentials
 
-Backend services call external APIs (portfolio data, security master) that require S2S authentication:
+The default VPN + deployed gateway flow does not require local GCP credentials. If you run `securities-recommendation` services locally, those services call external APIs (portfolio data, security master) that require S2S authentication:
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json'

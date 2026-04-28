@@ -183,8 +183,7 @@ sec-agent/
 - [uv](https://docs.astral.sh/uv/) package manager
 - `Reasoning_LLM_TiFin` checked out as a sibling directory (sec-agent imports it via `sys.path` — no pip install)
 - An OpenAI-compatible LLM endpoint with native function calling and a context window large enough for ~10 tool schemas (self-hosted GLM-4.7-Flash recommended)
-- Backend `securities-recommendation` services running locally or deployed
-- **GCP service account key** if backends run locally (S2S auth to upstream APIs)
+- Company VPN access for the default self-hosted LLM and deployed dev API gateway
 
 ### Setup
 
@@ -196,34 +195,36 @@ uv sync
 
 # Copy env template and configure
 cp .env.example .env
-# Edit .env — set LLM_BASE_URL, LLM_API_KEY, REASONING_ARCHITECTURE
+# Edit .env if needed — defaults use API_BASE_URL=https://api.askmyfi.dev,
+# LOCAL_MODE=false, and the self-hosted LLM endpoint.
 
-# If running local backends on separate ports, also set:
-# LOCAL_MODE=true
-# FIN_ENGINE_BASE_URL=http://localhost:8080
-# MODEL_PORTFOLIO_BASE_URL=http://localhost:8081
-
-# Start the agent
+# Connect to the company VPN, then start the agent
 uv run uvicorn main:app --port 8090 --reload
 ```
 
-### Local Backend Services
+The normal development path is just VPN access plus the agent process above. Financial Engine and Model Portfolio calls go through `API_BASE_URL=https://api.askmyfi.dev` with `LOCAL_MODE=false`.
 
-For deployed backends, set `API_BASE_URL=https://api.askmyfi.dev` and leave `LOCAL_MODE=false`.
+### Local Backend Override
 
-For local backends, run each service on its own port and let `APIClient` route by `/cr/<service>` prefix:
+Use this only when you intentionally need to debug `securities-recommendation` services on your machine. Running local backends requires their own repo setup and GCP S2S credentials.
 
 ```bash
-# Terminal 1 — Financial Engine
+export GOOGLE_APPLICATION_CREDENTIALS='/path/to/gcp-key-dev.json'
+```
+
+```bash
+# Terminal 1
 cd ../securities-recommendation
 python3 run_service.py fin-engine --env dev --port 8080
+```
 
-# Terminal 2 — Model Portfolio
+```bash
+# Terminal 2
 cd ../securities-recommendation
 python3 run_service.py model-portfolio --env dev --port 8081
 ```
 
-Use this `.env` shape in `sec-agent`:
+Then use this `.env` shape in `sec-agent`:
 
 ```env
 LOCAL_MODE=true
@@ -264,7 +265,7 @@ All config is via `.env` (or system env). See `.env.example` for the full list.
 
 | Variable | Default | Description |
 |---|---|---|
-| `API_BASE_URL` | `http://localhost:8089` | Deployed gateway URL, local proxy URL, or fallback local base URL |
+| `API_BASE_URL` | `https://api.askmyfi.dev` | Deployed dev gateway URL used by default over VPN; can be overridden for local proxy/prod |
 | `FIN_ENGINE_BASE_URL` | unset | Optional local direct URL for Financial Engine when `LOCAL_MODE=true` |
 | `MODEL_PORTFOLIO_BASE_URL` | unset | Optional local direct URL for Model Portfolio when `LOCAL_MODE=true` |
 | `LLM_BASE_URL` | `http://103.42.51.88:2205/` | OpenAI-compatible LLM endpoint |
@@ -392,7 +393,7 @@ Returns `{"status": "ok", "service": "sec-agent"}`.
 
 | Repo | Relationship | How sec-agent uses it |
 |---|---|---|
-| [`securities-recommendation`](../securities-recommendation) | Backend microservices (sibling) | Pure HTTP consumer via `APIClient`. No code import. |
+| [`securities-recommendation`](../securities-recommendation) | Backend microservices | Pure HTTP consumer via `APIClient`; default development uses the deployed dev gateway over VPN, with local sibling services only as an override. No code import. |
 | [`Reasoning_LLM_TiFin`](../Reasoning_LLM_TiFin) | Glass-Box reasoning library (sibling) | Imported through `sys.path` shim in `reasoning_adapter.py`. The adapter calls the Glass-Box model classes directly; sec-agent supplies live tool outputs (not the bundled filtered ones) and per-session histories. |
 
 For deeper detail on the Glass-Box internals (Reasoner / Answerer / Verifier prompts, retry loop, description JSON schema), see `Reasoning_LLM_TiFin/ARCHITECTURE.md`.

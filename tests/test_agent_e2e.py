@@ -1,7 +1,7 @@
 """
 End-to-end tests — real LLM + real backend APIs.
 
-These tests are slow, require VPN and backend services running.
+These tests are slow and require VPN access to the LLM and deployed dev backend.
 Run with: uv run pytest -m e2e
 """
 
@@ -28,6 +28,11 @@ def real_agent():
     api = APIClient(
         base_url=settings.API_BASE_URL,
         enable_auth=settings.ENABLE_AUTH,
+        local_mode=settings.LOCAL_MODE,
+        service_base_urls={
+            "fin-engine": settings.FIN_ENGINE_BASE_URL,
+            "model-portfolio": settings.MODEL_PORTFOLIO_BASE_URL,
+        },
     )
     return Agent(llm=llm, api=api)
 

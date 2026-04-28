@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # API target (securities-recommendation services)
-    API_BASE_URL: str = "http://localhost:8089"
+    API_BASE_URL: str = "https://api.askmyfi.dev"
     FIN_ENGINE_BASE_URL: str | None = None
     MODEL_PORTFOLIO_BASE_URL: str | None = None
 
@@ -17,8 +17,9 @@ class Settings(BaseSettings):
     # Auth toggle (False for local, True for deployed)
     ENABLE_AUTH: bool = False
 
-    # Local mode: strips /cr/src, /cr/fin-engine, etc. prefixes from endpoints
-    # Set to true when running backend services locally without a reverse proxy
+    # Local mode: strips /cr/src, /cr/fin-engine, etc. prefixes from endpoints.
+    # Default dev flow uses API_BASE_URL through VPN; set this only when running
+    # backend services locally without a reverse proxy.
     LOCAL_MODE: bool = False
 
     # Glass-Box reasoning architecture: "two_layer" or "three_layer".
