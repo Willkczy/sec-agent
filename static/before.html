@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1440, initial-scale=1">
+  <title>TIFIN AI · Transparent AI Financial Agent</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    body {
+      width: 1440px; height: 900px; overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────── */
+    .site-header {
+      height: 62px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 32px;
+      background: #fff;
+      border-bottom: 1.5px solid var(--border);
+    }
+    .logo {
+      display: flex; align-items: baseline; gap: 2px;
+      font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: #111;
+    }
+    .logo sup {
+      font-size: 11px; font-weight: 700; color: var(--blue);
+      vertical-align: super; line-height: 1; letter-spacing: 0;
+    }
+
+    .header-center { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+    .product-name  { font-size: 15px; font-weight: 700; color: #111; letter-spacing: -0.2px; }
+    /* DIFF 1 */
+    .product-sub   { font-size: 11px; color: var(--text-3); font-weight: 500; }
+
+    .live-badge {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; font-weight: 600; color: var(--green);
+    }
+    .live-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+      box-shadow: 0 0 0 2px #d1fae5;
+      animation: pulse 2.5s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.5} }
+
+    /* ── Layout ──────────────────────────────────────────────────────── */
+    .layout { flex: 1; display: flex; overflow: hidden; }
+
+    /* ── Sidebar ─────────────────────────────────────────────────────── */
+    .sidebar {
+      width: 248px; min-width: 248px; flex-shrink: 0;
+      display: flex; flex-direction: column;
+      padding: 22px 14px 20px; gap: 14px;
+      background: var(--bg-sidebar);
+      border-right: 1.5px solid var(--border);
+      overflow-y: auto;
+    }
+
+    .cap-title {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text-3); padding: 0 2px;
+    }
+    .cap-group {
+      border: 1px solid var(--border); border-radius: 10px;
+      overflow: hidden; background: #fff;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }
+    .cap-group-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 13px; font-size: 12.5px; font-weight: 700; color: #111;
+      cursor: pointer; user-select: none; transition: background .15s;
+    }
+    .cap-group-hdr:hover { background: var(--blue-light); }
+    .cap-count {
+      font-size: 10px; padding: 2px 7px; border-radius: 10px; font-weight: 700;
+      background: var(--blue-light); color: var(--blue);
+    }
+    .toggle { color: var(--text-3); font-size: 10px; transition: transform .2s; margin-left: 5px; }
+    .cap-group.open .toggle { transform: rotate(180deg); }
+    .cap-tools {
+      display: none; flex-wrap: wrap; gap: 5px;
+      padding: 10px 11px 13px; border-top: 1px solid var(--border); background: #fff;
+    }
+    .cap-group.open .cap-tools { display: flex; }
+    .tool-pill {
+      font-size: 10px; padding: 3px 9px; font-weight: 500;
+      background: var(--pill-bg); border: 1px solid var(--pill-border);
+      border-radius: 5px; color: var(--text-2); white-space: nowrap;
+    }
+
+    /* DIFF 2 — pipeline badge */
+    .pipeline-badge {
+      margin-top: auto;
+      border: 1px solid var(--border); border-radius: 10px; padding: 13px 14px;
+      background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }
+    .pipeline-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--text-3); font-weight: 700; margin-bottom: 9px;
+    }
+    .pipe-chips { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .pipe-chip-muted {
+      font-size: 11px; padding: 4px 11px;
+      background: var(--pill-bg); border: 1px solid var(--pill-border);
+      border-radius: 5px; color: var(--text-2); font-weight: 600;
+    }
+
+    /* ── Chat area ───────────────────────────────────────────────────── */
+    .chat-area { flex: 1; display: flex; flex-direction: column; background: #fff; min-width: 0; }
+
+    .messages {
+      flex: 1; overflow-y: auto;
+      padding: 32px 40px;
+      display: flex; flex-direction: column; gap: 18px;
+    }
+
+    /* Empty state */
+    .empty-state {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 32px; padding: 40px 0;
+    }
+    .empty-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; text-align: center;
+    }
+    .empty-title {
+      font-size: 30px; font-weight: 800; color: #111; line-height: 1.2; text-align: center;
+    }
+    .empty-title .highlight { color: var(--blue); }
+
+    .suggestions-section { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .suggestions-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-3);
+    }
+    .suggestion-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 720px; }
+    .suggestion-chip {
+      padding: 9px 16px;
+      background: #fff; border: 1.5px solid var(--border);
+      border-radius: 12px; font-size: 13px; font-weight: 500; color: var(--text-2);
+      cursor: pointer; transition: all .15s;
+      font-family: 'Inter', sans-serif; text-align: left;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
+      max-width: 340px; line-height: 1.4;
+    }
+    .suggestion-chip:hover {
+      border-color: var(--blue); color: var(--blue);
+      background: var(--blue-light); box-shadow: none;
+    }
+
+    /* Input bar */
+    .input-bar {
+      flex-shrink: 0; padding: 16px 40px 20px;
+      border-top: 1.5px solid var(--border); background: #fff;
+    }
+    .input-wrap {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--bg-input); border: 1.5px solid var(--border);
+      border-radius: 12px; padding: 5px 6px 5px 18px;
+      transition: border-color .2s, background .2s;
+    }
+    .input-wrap:focus-within { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(59,125,216,.1); }
+    .query-input {
+      flex: 1; border: none; background: transparent; outline: none;
+      font-size: 14px; color: #111; padding: 8px 0;
+      font-family: 'Inter', sans-serif;
+    }
+    .query-input::placeholder { color: var(--text-3); }
+    .send-btn {
+      width: 38px; height: 38px; border-radius: 9px;
+      background: var(--blue); border: none; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .15s, transform .1s; flex-shrink: 0;
+    }
+    .send-btn:hover  { background: var(--blue-dark); }
+    .send-btn:active { transform: scale(.95); }
+    .send-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+    .send-btn svg { width: 16px; height: 16px; fill: #fff; }
+
+    /* ── Messages ────────────────────────────────────────────────────── */
+    .msg-row { display: flex; align-items: flex-start; gap: 11px; }
+    .user-row { flex-direction: row-reverse; }
+
+    .user-bubble {
+      max-width: 70%; padding: 12px 17px;
+      background: var(--blue); color: #fff;
+      border-radius: 18px 18px 4px 18px; font-size: 14px; font-weight: 500; line-height: 1.55;
+    }
+
+    /* DIFF 3 — avatar */
+    .ai-avatar {
+      width: 33px; height: 33px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700;
+      background: var(--pill-bg); color: var(--text-2);
+      border: 1.5px solid var(--border);
+    }
+
+    /* DIFF 4 — bubble accent */
+    .ai-bubble {
+      flex: 1; padding: 15px 20px;
+      background: var(--bg-msg);        /* light gray box */
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--border-mid);
+      border-radius: 4px 18px 18px 18px;
+      font-size: 14px; font-weight: 400; color: #111;
+      line-height: 1.75; min-width: 0; word-break: break-word;
+    }
+    .ai-bubble p + p { margin-top: 10px; }
+    .ai-bubble strong { font-weight: 700; color: #111; }
+    .ai-bubble.thinking { display: flex; align-items: center; gap: 5px; padding: 16px 22px; }
+
+    .dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--text-3);
+      animation: bounce 1.2s ease-in-out infinite;
+    }
+    .dot:nth-child(2){animation-delay:.2s} .dot:nth-child(3){animation-delay:.4s}
+    @keyframes bounce { 0%,100%{transform:translateY(0);opacity:.4} 50%{transform:translateY(-6px);opacity:1} }
+
+    .err { color: var(--red); font-size: 13px; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="logo">TIFIN<sup>AI</sup></div>
+    <div class="header-center">
+      <div class="product-name">Transparent AI Financial Agent</div>
+      <div class="product-sub">Standard LLM</div>        <!-- DIFF 1 -->
+    </div>
+    <div class="live-badge"><div class="live-dot"></div><span>Live</span></div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="cap-title">Active Capabilities</div>
+
+      <div class="cap-group open">
+        <div class="cap-group-hdr" onclick="this.parentElement.classList.toggle('open')">
+          <span>Financial Engine</span>
+          <span style="display:flex;align-items:center;gap:5px"><span class="cap-count">10</span><span class="toggle">▾</span></span>
+        </div>
+        <div class="cap-tools">
+          <span class="tool-pill">Asset Breakdown</span><span class="tool-pill">Sector Breakdown</span>
+          <span class="tool-pill">Market Cap</span><span class="tool-pill">Diversification</span>
+          <span class="tool-pill">Single Holding</span><span class="tool-pill">Total Stock</span>
+          <span class="tool-pill">AMC Pref</span><span class="tool-pill">Sector Pref</span>
+          <span class="tool-pill">Theme Pref</span><span class="tool-pill">Factor Pref</span>
+        </div>
+      </div>
+
+      <div class="cap-group">
+        <div class="cap-group-hdr" onclick="this.parentElement.classList.toggle('open')">
+          <span>Model Portfolio</span>
+          <span style="display:flex;align-items:center;gap:5px"><span class="cap-count">9</span><span class="toggle">▾</span></span>
+        </div>
+        <div class="cap-tools">
+          <span class="tool-pill">Get Options</span><span class="tool-pill">Backtest</span>
+          <span class="tool-pill">Builder</span><span class="tool-pill">Risk Profile</span>
+          <span class="tool-pill">Risk V2</span><span class="tool-pill">Single Goal</span>
+          <span class="tool-pill">Multi Goal</span><span class="tool-pill">Goal Defaults</span>
+          <span class="tool-pill">Stock→Fund</span>
+        </div>
+      </div>
+
+      <!-- DIFF 2 -->
+      <div class="pipeline-badge">
+        <div class="pipeline-label">Model</div>
+        <div class="pipe-chips"><span class="pipe-chip-muted">Standard LLM</span></div>
+      </div>
+    </aside>
+
+    <div class="chat-area">
+      <div id="messages" class="messages">
+        <div class="empty-state" id="emptyState">
+          <div>
+            <div class="empty-label">TIFIN AI · Standard LLM</div>
+            <div class="empty-title">What would you like to <span class="highlight">explore</span> today?</div>
+          </div>
+          <div class="suggestions-section">
+            <div class="suggestions-label">Suggested Questions</div>
+            <div class="suggestion-chips" id="suggestionChips"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="input-bar">
+        <div class="input-wrap">
+          <input id="queryInput" class="query-input" type="text"
+            placeholder="How can I help you today?" autocomplete="off">
+          <button id="sendBtn" class="send-btn" title="Send">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL    = '/tool-ask';                          /* DIFF: endpoint */
+    const DEMO_USER  = '1912650190';
+    const SESSION_ID = 'session-' + Math.random().toString(36).slice(2, 9);
+
+    const QUESTION_POOL = [
+      "How is my money split across different asset types?",
+      "How diversified is my portfolio?",
+      "What are my top sectors?",
+      "How is my portfolio split between large, mid, and small cap stocks?",
+      "What is my total exposure to HDFC Bank Ltd.?",
+      "Show me the top 5 individual stock exposures in my portfolio.",
+      "Which AMC am I most concentrated in?",
+      "Which sectors am I overweight and underweight in versus the benchmark?",
+      "Do I have a thematic investment focus?",
+      "Do I have any strong factor tilt?",
+      "What is my stored overall risk profile?",
+      "What portfolio is recommended for me if I invest 50000 as a one-time lump sum?",
+      "What mutual fund portfolio would you recommend for me if I invest 10000 every month through an SIP?",
+      "Assess risk for a 30 year old earning 12 lakhs annually, long term horizon, willing to lose 20%, pin code 400001.",
+      "For retirement, if I invest 10000 monthly SIP toward a 1 crore goal over 20 years, what allocation does the optimizer recommend?",
+      "What is the suggested default monthly SIP for reaching a 1 crore retirement corpus over 30 years?",
+    ];
+
+    function shuffle(arr) {
+      return arr.slice().sort(() => Math.random() - 0.5);
+    }
+
+    (function renderSuggestions() {
+      const container = document.getElementById('suggestionChips');
+      shuffle(QUESTION_POOL).slice(0, 6).forEach(q => {
+        const btn = document.createElement('button');
+        btn.className = 'suggestion-chip';
+        btn.textContent = q;
+        btn.onclick = () => ask(q);
+        container.appendChild(btn);
+      });
+    })();
+
+    const input = document.getElementById('queryInput');
+    const btn   = document.getElementById('sendBtn');
+    btn.addEventListener('click', () => send());
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+    function ask(q) { send(q); }
+
+    let seq = 0;
+    async function send(preset) {
+      const query = preset || input.value.trim();
+      if (!query) return;
+      input.value = '';
+      btn.disabled = true;
+      const es = document.getElementById('emptyState');
+      if (es) es.remove();
+      appendUser(query);
+      const id = appendLoading();
+      try {
+        const res = await fetch(API_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, user_id: DEMO_USER, session_id: SESSION_ID }),
+        });
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
+        finishLoading(id, md(data.answer));
+      } catch (err) {
+        const msg = err.message.includes('fetch')
+          ? 'Cannot reach server — make sure sec-agent is running at localhost:8090.'
+          : err.message;
+        finishLoading(id, `<p class="err">⚠ ${esc(msg)}</p>`);
+      }
+      btn.disabled = false;
+      input.focus();
+    }
+
+    function appendUser(text) {
+      msgs().insertAdjacentHTML('beforeend',
+        `<div class="msg-row user-row"><div class="user-bubble">${esc(text)}</div></div>`);
+      scroll();
+    }
+    function appendLoading() {
+      const id = 'msg-' + ++seq;
+      msgs().insertAdjacentHTML('beforeend',
+        `<div class="msg-row" id="${id}">
+           <div class="ai-avatar">AI</div>
+           <div class="ai-bubble thinking"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+         </div>`);                                          /* DIFF 3: avatar "AI" */
+      scroll(); return id;
+    }
+    function finishLoading(id, html) {
+      const row = document.getElementById(id);
+      if (!row) return;
+      row.querySelector('.ai-bubble').classList.remove('thinking');
+      row.querySelector('.ai-bubble').innerHTML = html;
+      scroll();
+    }
+    function msgs()  { return document.getElementById('messages'); }
+    function scroll(){ const m = msgs(); m.scrollTop = m.scrollHeight; }
+    function md(text) {
+      return '<p>' + esc(text)
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n{2,}/g, '</p><p style="margin-top:10px">')
+        .replace(/\n/g, '<br>') + '</p>';
+    }
+    function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  </script>
+</body>
+</html>

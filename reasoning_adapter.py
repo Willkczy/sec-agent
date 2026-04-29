@@ -24,7 +24,6 @@ if str(_REASONING_REPO) not in sys.path:
     sys.path.insert(0, str(_REASONING_REPO))
 
 from model_two_layer import TwoLayerGlassBoxModel, API_DESCRIPTIONS  # noqa: E402
-from model_three_layer import ThreeLayerGlassBoxModel  # noqa: E402
 
 from config import settings  # noqa: E402
 from logging_config import log_stage  # noqa: E402
@@ -113,6 +112,7 @@ def _get_model() -> TwoLayerGlassBoxModel:
         return _MODEL
     arch = (settings.REASONING_ARCHITECTURE or "two_layer").lower()
     if arch == "three_layer":
+        from model_three_layer import ThreeLayerGlassBoxModel  # noqa: E402
         _MODEL = ThreeLayerGlassBoxModel()
     else:
         _MODEL = TwoLayerGlassBoxModel()
@@ -243,7 +243,7 @@ class ReasoningAdapter:
             hist_turns=len(history) // 2,
         )
         started = time.perf_counter()
-        answer, trace = await asyncio.to_thread(
+        answer, trace, vr = await asyncio.to_thread(
             model.ask,
             question,
             api_keys,
@@ -253,8 +253,8 @@ class ReasoningAdapter:
         )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
 
-        verifier_verdict = getattr(model, "last_verifier_verdict", None)
-        verifier_retries = getattr(model, "last_verifier_retries", 0)
+        verifier_verdict = "PASS" if vr.passed else "FAIL"
+        verifier_retries = getattr(vr, "retry_count", 0)
         log_stage(
             logger, "reasoning", "ok",
             verdict=verifier_verdict if verifier_verdict is not None else "-",

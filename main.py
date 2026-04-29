@@ -14,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
@@ -566,11 +567,113 @@ class Agent:
 # FastAPI app
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Securities Recommendation Agent")
+app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "sec-agent"}
+
+
+_BASIC_TOOL_SYSTEM_PROMPT = (
+    "You are a helpful financial advisor assistant. "
+    "Use the available tools to fetch the user's real portfolio data, "
+    "then provide a direct, concise answer based on the raw numbers returned. "
+    "Report the data clearly. Do not refuse to answer — use tools to get the data first."
+)
+
+
+@app.post("/tool-ask", response_model=AskResponse)
+async def tool_ask(request: AskRequest):
+    """Tool-calling with direct LLM answer — data access, but no Glass-Box pipeline."""
+    session = (
+        session_store.get_or_create(request.session_id)
+        if request.session_id else SessionState()
+    )
+    user_context = _resolve_user_context(
+        session,
+        user_id=request.user_id,
+        external_user_id=request.external_user_id,
+        org_id=request.org_id,
+    )
+
+    agent = Agent(llm=llm_client, api=api_client, reasoner=reasoning_adapter, sessions=session_store)
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": _BASIC_TOOL_SYSTEM_PROMPT}]
+    ctx_msg = _build_user_context_message(user_context)
+    if ctx_msg:
+        messages.append(ctx_msg)
+    messages.append({"role": "user", "content": request.query})
+
+    tool_results: list[dict[str, Any]] = []
+    last_text = ""
+
+    try:
+        for _ in range(request.max_iters or 3):
+            resp = await llm_client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=messages,
+                tools=OPENAI_TOOLS,
+                temperature=settings.LLM_TEMPERATURE,
+                max_tokens=settings.LLM_MAX_TOKENS,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            msg = resp.choices[0].message
+            msg_dict: dict[str, Any] = {"role": "assistant"}
+            if msg.content:
+                msg_dict["content"] = msg.content
+                last_text = msg.content
+            if msg.tool_calls:
+                msg_dict["tool_calls"] = [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in msg.tool_calls
+                ]
+            messages.append(msg_dict)
+
+            if not msg.tool_calls:
+                break
+
+            for tc in msg.tool_calls:
+                tool_name = tc.function.name
+                try:
+                    params = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    params = {}
+                params, result = await agent._call_tool(tool_name, params, user_context)
+                tool_results.append({"tool": tool_name, "params": params, "result": result})
+                result_str = json.dumps(result, ensure_ascii=False, default=str)
+                if len(result_str) > 8000:
+                    result_str = result_str[:8000] + "... [truncated]"
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+
+        # If tools ran but LLM didn't emit a final text answer, prompt once more
+        if tool_results and not last_text:
+            messages.append({
+                "role": "user",
+                "content": "Based on the data above, please answer my original question directly and concisely.",
+            })
+            resp = await llm_client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=messages,
+                temperature=settings.LLM_TEMPERATURE,
+                max_tokens=settings.LLM_MAX_TOKENS,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            last_text = resp.choices[0].message.content or ""
+
+    except Exception as e:
+        logger.exception("tool_ask failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if _has_missing_user_context_error(tool_results):
+        last_text = MISSING_USER_CONTEXT_ANSWER
+
+    return AskResponse(
+        answer=last_text or "No answer could be generated.",
+        session_id=request.session_id,
+        debug={"mode": "tool_direct", "tool_results": tool_results},
+    )
 
 
 @app.post("/ask", response_model=AskResponse)
